@@ -7,6 +7,7 @@ generator client {
 
 datasource db {
   provider = "mysql"
+  url      = env("DATABASE_URL")
 }
 
 model User {
@@ -14,30 +15,38 @@ model User {
   email     String   @unique
   password  String
   name      String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  isActive  Boolean  @default(false) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt      @map("updated_at")
 
-  refreshTokens  RefreshToken[]
-  passwordResets PasswordReset[]
+  passwordResets      PasswordReset[]
+  emailVerifications  EmailVerification[]
+
+  @@map("user")
 }
 
-model RefreshToken {
+model EmailVerification {
   id        Int      @id @default(autoincrement())
-  token     String   @unique @db.VarChar(512)
-  userId    Int
-  expiresAt DateTime
-  createdAt DateTime @default(now())
+  code      String
+  userId    Int      @map("user_id")
+  expiresAt DateTime @map("expires_at")
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("email_verification")
 }
 
 model PasswordReset {
   id        Int      @id @default(autoincrement())
   token     String   @unique
-  userId    Int
-  expiresAt DateTime
+  userId    Int      @map("user_id")
+  expiresAt DateTime @map("expires_at")
   used      Boolean  @default(false)
-  createdAt DateTime @default(now())
+  createdAt DateTime @default(now()) @map("created_at")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("password_reset")
 }

@@ -5,6 +5,7 @@ import {
   refreshHandler,
   forgotPasswordHandler,
   resetPasswordHandler,
+  verifyEmailHandler,
 } from './auth.controller';
 
 const router = Router();
@@ -150,5 +151,35 @@ router.post('/forgot-password', forgotPasswordHandler);
  *         description: Invalid or expired token
  */
 router.post('/reset-password', resetPasswordHandler);
+
+/**
+ * @swagger
+ * /auth/verify-email:
+ *   post:
+ *     summary: Verify account with 6-digit code
+ *     tags: [Auth]
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [email, code]
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 format: email
+ *               code:
+ *                 type: string
+ *                 minLength: 6
+ *                 maxLength: 6
+ *     responses:
+ *       200:
+ *         description: Account verified
+ *       400:
+ *         description: Invalid or expired code
+ */
+router.post('/verify-email', verifyEmailHandler);
 
 export default router;

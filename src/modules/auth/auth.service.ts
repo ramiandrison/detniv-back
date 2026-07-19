@@ -5,8 +5,8 @@ import { signAccessToken, signRefreshToken, verifyRefreshToken } from '../../uti
 import { sendMail } from '../../utils/mailer';
 import { env } from '../../config/env';
 
-const REFRESH_TOKEN_TTL_DAYS = 7;
 const RESET_TOKEN_TTL_MINUTES = 30;
+const VERIFICATION_CODE_TTL_MINUTES = 15;
 
 export const register = async (email: string, password: string, name?: string) => {
   const existing = await prisma.user.findUnique({ where: { email } });
@@ -15,7 +15,24 @@ export const register = async (email: string, password: string, name?: string) =
   const hashed = await bcrypt.hash(password, 12);
   const user = await prisma.user.create({ data: { email, password: hashed, name } });
 
+  await sendVerificationCode(user.id, email);
+
   return { id: user.id, email: user.email, name: user.name };
+};
+
+export const verifyEmail = async (email: string, code: string) => {
+  const user = await prisma.user.findUnique({ where: { email } });
+  if (!user) throw new Error('Invalid code');
+
+  const record = await prisma.emailVerification.findFirst({
+    where: { userId: user.id, code, used: false, expiresAt: { gt: new Date() } },
+  });
+  if (!record) throw new Error('Invalid or expired code');
+
+  await prisma.$transaction([
+    prisma.user.update({ where: { id: user.id }, data: { isActive: true } }),
+    prisma.emailVerification.update({ where: { id: record.id }, data: { used: true } }),
+  ]);
 };
 
 export const login = async (email: string, password: string) => {
@@ -24,8 +41,10 @@ export const login = async (email: string, password: string) => {
 
   const valid = await bcrypt.compare(password, user.password);
   if (!valid) throw new Error('Invalid credentials');
+  if (!user.isActive) throw new Error('Account not verified');
 
-  return issueTokens(user.id);
+  const tokens = issueTokens(user.id);
+  return { ...tokens, user: { id: user.id, email: user.email, name: user.name } };
 };
 
 export const refresh = async (token: string) => {
@@ -35,13 +54,6 @@ export const refresh = async (token: string) => {
   } catch {
     throw new Error('Invalid refresh token');
   }
-
-  const stored = await prisma.refreshToken.findUnique({ where: { token } });
-  if (!stored || stored.expiresAt < new Date()) {
-    throw new Error('Refresh token expired or not found');
-  }
-
-  await prisma.refreshToken.delete({ where: { token } });
   return issueTokens(payload.sub);
 };
 
@@ -75,20 +87,25 @@ export const resetPassword = async (token: string, newPassword: string) => {
   await prisma.$transaction([
     prisma.user.update({ where: { id: record.userId }, data: { password: hashed } }),
     prisma.passwordReset.update({ where: { token }, data: { used: true } }),
-    prisma.refreshToken.deleteMany({ where: { userId: record.userId } }),
   ]);
 };
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-const issueTokens = async (userId: number) => {
-  const accessToken = signAccessToken(userId);
-  const refreshToken = signRefreshToken(userId);
+const sendVerificationCode = async (userId: number, email: string) => {
+  const code = Math.floor(100000 + Math.random() * 900000).toString();
+  const expiresAt = new Date(Date.now() + VERIFICATION_CODE_TTL_MINUTES * 60 * 1000);
 
-  const expiresAt = new Date();
-  expiresAt.setDate(expiresAt.getDate() + REFRESH_TOKEN_TTL_DAYS);
+  await prisma.emailVerification.create({ data: { code, userId, expiresAt } });
 
-  await prisma.refreshToken.create({ data: { token: refreshToken, userId, expiresAt } });
-
-  return { accessToken, refreshToken };
+  await sendMail(
+    email,
+    'Verify your account',
+    `<p>Your verification code is: <strong>${code}</strong>. It expires in ${VERIFICATION_CODE_TTL_MINUTES} minutes.</p>`
+  );
 };
+
+const issueTokens = (userId: number) => ({
+  accessToken: signAccessToken(userId),
+  refreshToken: signRefreshToken(userId),
+});
