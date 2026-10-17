@@ -39,7 +39,7 @@ const FIXTURE_HTML = `<!DOCTYPE html>
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const USER = { id: 7, email: "ada@detniv.test", name: "Ada" };
-const API = "http://localhost:3001";
+const API = "http://localhost:3001/api";
 
 function bootPanel(routes, seedStore) {
   const virtualConsole = new VirtualConsole();

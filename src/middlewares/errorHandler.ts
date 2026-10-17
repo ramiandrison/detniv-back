@@ -11,6 +11,8 @@ const BUSINESS_STATUS: Record<string, number> = {
   'Invalid or expired code': 400,
   'Invalid refresh token': 401,
   'Invalid or expired reset token': 400,
+  'Too many descriptions': 400,
+  'Description not found': 404,
 };
 
 export const errorHandler = (err: Error, _req: Request, res: Response, _next: NextFunction): void => {

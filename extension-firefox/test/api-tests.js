@@ -79,7 +79,7 @@ function mockFetch(url, options) {
   global.fetch = mockFetch;
   const api = require(path.join(__dirname, "..", "api.js"));
 
-  fetchRoutes["http://localhost:3001/auth/login"] = {
+  fetchRoutes["http://localhost:3001/api/auth/login"] = {
     status: 200,
     body: {
       success: true,
@@ -102,7 +102,7 @@ function mockFetch(url, options) {
     assert.strictEqual(session.refreshToken, "refresh-1");
     assert.ok(session.expiresAt > Date.now(), "expiresAt manquant");
     const call = fetchLog[fetchLog.length - 1];
-    assert.strictEqual(call.url, "http://localhost:3001/auth/login");
+    assert.strictEqual(call.url, "http://localhost:3001/api/auth/login");
     assert.deepStrictEqual(JSON.parse(call.options.body), {
       email: "ada@detniv.test",
       password: "motdepasse",
@@ -120,7 +120,7 @@ function mockFetch(url, options) {
       body: { success: true, data: { id: 1 } },
     };
     const data = await api.handle("auth.api", {
-      path: "/api/thing",
+      path: "/thing",
       method: "POST",
       body: { a: 1 },
     });
@@ -132,7 +132,7 @@ function mockFetch(url, options) {
   await test("api : 401 → refresh automatique puis nouvel essai", async () => {
     global.browser.__store.detnivSession.expiresAt = Date.now() + 60_000;
     fetchLog.length = 0;
-    fetchRoutes["http://localhost:3001/auth/refresh"] = {
+    fetchRoutes["http://localhost:3001/api/auth/refresh"] = {
       status: 200,
       body: {
         success: true,
@@ -147,7 +147,7 @@ function mockFetch(url, options) {
         : { status: 200, body: { success: true, data: { id: 2 } } };
     };
 
-    const data = await api.handle("auth.api", { path: "/api/thing" });
+    const data = await api.handle("auth.api", { path: "/thing" });
     assert.strictEqual(data.id, 2);
     assert.strictEqual(fetchLog.length, 3, "appel api + refresh + nouvel appel api");
     assert.match(fetchLog[1].url, /\/auth\/refresh$/);
@@ -157,7 +157,7 @@ function mockFetch(url, options) {
   });
 
   await test("api : erreur métier remontée telle quelle", async () => {
-    fetchRoutes["http://localhost:3001/auth/login"] = {
+    fetchRoutes["http://localhost:3001/api/auth/login"] = {
       status: 401,
       body: { success: false, message: "Invalid credentials" },
     };
@@ -173,7 +173,7 @@ function mockFetch(url, options) {
     try {
       await assert.rejects(
         () => api.handle("auth.login", { email: "a@b.c", password: "x" }),
-        /API Detniv injoignable \(http:\/\/localhost:3001\)/
+        /API Detniv injoignable \(http:\/\/localhost:3001\/api\)/
       );
     } finally {
       global.fetch = previous;
@@ -181,7 +181,7 @@ function mockFetch(url, options) {
   });
 
   await test("api : forgot-password (réponse anti-énumération)", async () => {
-    fetchRoutes["http://localhost:3001/auth/forgot-password"] = {
+    fetchRoutes["http://localhost:3001/api/auth/forgot-password"] = {
       status: 200,
       body: {
         success: true,
@@ -193,7 +193,7 @@ function mockFetch(url, options) {
   });
 
   await test("api : resend-verification envoie le bon endpoint", async () => {
-    fetchRoutes["http://localhost:3001/auth/resend-verification"] = {
+    fetchRoutes["http://localhost:3001/api/auth/resend-verification"] = {
       status: 200,
       body: {
         success: true,
@@ -203,7 +203,7 @@ function mockFetch(url, options) {
     const data = await api.handle("auth.resend", { email: "ada@detniv.test" });
     assert.match(data.message, /new code has been sent/);
     const call = fetchLog[fetchLog.length - 1];
-    assert.strictEqual(call.url, "http://localhost:3001/auth/resend-verification");
+    assert.strictEqual(call.url, "http://localhost:3001/api/auth/resend-verification");
     assert.deepStrictEqual(JSON.parse(call.options.body), { email: "ada@detniv.test" });
   });
 

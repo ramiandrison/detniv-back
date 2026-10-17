@@ -22,7 +22,7 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
 
-  const DEFAULT_API_URL = "http://localhost:3001";
+  const DEFAULT_API_URL = "http://localhost:3001/api";
   const SESSION_KEY = "detnivSession";
   const ACCESS_TTL_MS = 14 * 60 * 1000;
 

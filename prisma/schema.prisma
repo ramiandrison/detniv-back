@@ -21,6 +21,7 @@ model User {
 
   passwordResets      PasswordReset[]
   emailVerifications  EmailVerification[]
+  descriptionTemplates DescriptionTemplate[]
 
   @@map("user")
 }
@@ -49,4 +50,17 @@ model PasswordReset {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("password_reset")
+}
+
+model DescriptionTemplate {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  name      String   @db.VarChar(120)
+  text      String   @db.Text
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt      @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("description_template")
 }
