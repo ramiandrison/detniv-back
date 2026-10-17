@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Vinted HEIC Importer",
-  "version": "1.0.0",
-  "description": "Importez des photos HEIC/HEIF sur Vinted — conversion automatique en JPEG ou PNG.",
+  "version": "1.1.1",
+  "description": "Importez des photos HEIC/HEIF sur Vinted — conversion automatique en JPEG ou PNG, et amélioration instantanée des photos (baguette magique).",
   "browser_specific_settings": {
     "gecko": {
       "id": "detniv-heic@vinted-ext",
@@ -60,8 +60,37 @@
         "https://www.vinted.fi/*",
         "https://www.vinted.no/*"
       ],
-      "js": ["heic-to.js", "content.js"],
+      "js": ["heic-to.js", "content.js", "enhance.js", "wand.js"],
       "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["bridge.js"],
+      "matches": [
+        "https://www.vinted.fr/*",
+        "https://www.vinted.com/*",
+        "https://www.vinted.it/*",
+        "https://www.vinted.es/*",
+        "https://www.vinted.de/*",
+        "https://www.vinted.co.uk/*",
+        "https://www.vinted.nl/*",
+        "https://www.vinted.pl/*",
+        "https://www.vinted.be/*",
+        "https://www.vinted.pt/*",
+        "https://www.vinted.lt/*",
+        "https://www.vinted.lv/*",
+        "https://www.vinted.cz/*",
+        "https://www.vinted.sk/*",
+        "https://www.vinted.hu/*",
+        "https://www.vinted.ro/*",
+        "https://www.vinted.at/*",
+        "https://www.vinted.ch/*",
+        "https://www.vinted.se/*",
+        "https://www.vinted.dk/*",
+        "https://www.vinted.fi/*",
+        "https://www.vinted.no/*"
+      ]
     }
   ],
   "action": {
