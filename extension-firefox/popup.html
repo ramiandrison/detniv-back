@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vinted HEIC Importer</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header>
+    <h1>HEIC → Vinted</h1>
+    <p class="subtitle">Importez vos photos iPhone sur Vinted</p>
+  </header>
+
+  <main>
+    <section class="setting-group">
+      <label class="setting-label" for="format">Format de conversion</label>
+      <div class="radio-row">
+        <label class="radio-option">
+          <input type="radio" name="format" value="jpeg" id="format-jpeg" checked />
+          <span class="radio-custom"></span>
+          <span>JPEG <small>(recommandé)</small></span>
+        </label>
+        <label class="radio-option">
+          <input type="radio" name="format" value="png" id="format-png" />
+          <span class="radio-custom"></span>
+          <span>PNG <small>(sans perte)</small></span>
+        </label>
+      </div>
+    </section>
+
+    <section class="setting-group" id="quality-group">
+      <div class="setting-header">
+        <label class="setting-label" for="quality">Qualité JPEG</label>
+        <span class="quality-value" id="quality-value">92%</span>
+      </div>
+      <input
+        type="range"
+        id="quality"
+        min="50"
+        max="100"
+        step="1"
+        value="92"
+      />
+      <div class="range-labels">
+        <span>50%</span>
+        <span>100%</span>
+      </div>
+    </section>
+
+    <section class="info-box">
+      <p>
+        Les fichiers <strong>.heic</strong> et <strong>.heif</strong> sont
+        automatiquement convertis lors de l'import (sélecteur de fichiers,
+        glisser-déposer).
+      </p>
+    </section>
+  </main>
+
+  <footer>
+    <span class="status" id="status">Paramètres enregistrés</span>
+  </footer>
+
+  <script src="popup.js"></script>
+</body>
+</html>
