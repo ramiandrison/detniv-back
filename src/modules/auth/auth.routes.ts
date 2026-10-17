@@ -6,6 +6,7 @@ import {
   forgotPasswordHandler,
   resetPasswordHandler,
   verifyEmailHandler,
+  resendVerificationHandler,
 } from './auth.controller';
 
 const router = Router();
@@ -181,5 +182,29 @@ router.post('/reset-password', resetPasswordHandler);
  *         description: Invalid or expired code
  */
 router.post('/verify-email', verifyEmailHandler);
+
+/**
+ * @swagger
+ * /auth/resend-verification:
+ *   post:
+ *     summary: Resend the 6-digit verification code for an unverified account
+ *     tags: [Auth]
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [email]
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 format: email
+ *     responses:
+ *       200:
+ *         description: Always returns 200 to prevent enumeration
+ */
+router.post('/resend-verification', resendVerificationHandler);
 
 export default router;

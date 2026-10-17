@@ -35,6 +35,19 @@ export const verifyEmail = async (email: string, code: string) => {
   ]);
 };
 
+export const resendVerification = async (email: string) => {
+  const user = await prisma.user.findUnique({ where: { email } });
+  // Réponse identique que l'utilisateur existe ou non (anti-énumération).
+  if (!user || user.isActive) return;
+
+  // Un seul code valide à la fois : on invalide les précédents.
+  await prisma.emailVerification.updateMany({
+    where: { userId: user.id, used: false },
+    data: { used: true },
+  });
+  await sendVerificationCode(user.id, email);
+};
+
 export const login = async (email: string, password: string) => {
   const user = await prisma.user.findUnique({ where: { email } });
   if (!user) throw new Error('Invalid credentials');

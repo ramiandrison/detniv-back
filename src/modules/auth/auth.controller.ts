@@ -7,6 +7,7 @@ import {
   forgotPasswordSchema,
   resetPasswordSchema,
   verifyEmailSchema,
+  resendVerificationSchema,
 } from './auth.validators';
 import { sendSuccess, sendError } from '../../utils/response';
 
@@ -49,4 +50,12 @@ export const verifyEmailHandler = wrap(async (req, res) => {
   const { email, code } = verifyEmailSchema.parse(req.body);
   await authService.verifyEmail(email, code);
   sendSuccess(res, { message: 'Account verified successfully.' });
+});
+
+export const resendVerificationHandler = wrap(async (req, res) => {
+  const { email } = resendVerificationSchema.parse(req.body);
+  await authService.resendVerification(email);
+  sendSuccess(res, {
+    message: 'If this email exists and is not verified, a new code has been sent.',
+  });
 });
