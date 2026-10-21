@@ -390,6 +390,54 @@ const LOGIN_OK = {
     assert.strictEqual(panel.parentElement.className, "site-content");
   });
 
+  await test("panel : Republication appelle DetnivRepost.start()", async () => {
+    const env = bootPanel({ [API + "/auth/login"]: LOGIN_OK });
+    await env.ready();
+    const panel = env.panel();
+    setVal(env.win, panel.querySelector("input[type=email]"), "ada@detniv.test");
+    setVal(env.win, panel.querySelector("input[type=password]"), "motdepasse");
+    submit(env.win, panel.querySelector("form"));
+    await sleep(40);
+
+    let started = 0;
+    env.win.DetnivRepost = {
+      async start() {
+        started++;
+        return { navigating: false, count: 17, pages: 2, url: "https://www.vinted.fr/member/7" };
+      },
+    };
+    const btn = [...env.panel().querySelectorAll("button")].find((b) =>
+      /^Republication/.test(b.textContent.trim())
+    );
+    assert.ok(btn, "bouton Republication absent");
+    await click(env.win, btn);
+    assert.strictEqual(started, 1, "DetnivRepost.start() non appelé");
+    const notice = env.panel().querySelector(".dv-notice--success");
+    assert.ok(notice, "notice de succès absente");
+    assert.match(notice.textContent, /17 article\(s\).*2 page\(s\)/);
+  });
+
+  await test("panel : résultat de republication affiché à l'ouverture", async () => {
+    const env = bootPanel({}, {
+      detnivRepostResult: { count: 5, pages: 1, at: Date.now() },
+    });
+    await env.ready();
+    const notice = env.panel().querySelector(".dv-notice--success");
+    assert.ok(notice, "notice de résultat absente");
+    assert.match(notice.textContent, /5 article\(s\)/);
+    assert.ok(!("detnivRepostResult" in env.store), "résultat non consommé");
+  });
+
+  await test("panel : échec de republication affiché en erreur", async () => {
+    const env = bootPanel({}, {
+      detnivRepostResult: { count: 0, pages: 0, error: "HTTP 429", at: Date.now() },
+    });
+    await env.ready();
+    const notice = env.panel().querySelector(".dv-notice--error");
+    assert.ok(notice, "notice d'erreur absente");
+    assert.match(notice.textContent, /Republication : HTTP 429/);
+  });
+
   for (const r of results) {
     if (r.ok) console.log(`  ok   ${r.name}`);
     else console.log(`  FAIL ${r.name}\n       ${r.err && r.err.message}`);

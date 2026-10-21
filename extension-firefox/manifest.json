@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Vinted HEIC Importer",
-  "version": "1.4.1",
+  "version": "1.6.0",
   "description": "Importez des photos HEIC/HEIF sur Vinted — conversion automatique en JPEG ou PNG, amélioration instantanée des photos (baguette magique) et panneau Detniv (connexion, création d'annonce, republication).",
   "browser_specific_settings": {
     "gecko": {
@@ -9,7 +9,10 @@
       "strict_min_version": "109.0"
     }
   },
-  "permissions": ["storage"],
+  "permissions": ["storage", "cookies"],
+  "background": {
+    "scripts": ["background.js"]
+  },
   "host_permissions": [
     "https://www.vinted.fr/*",
     "https://www.vinted.com/*",
@@ -60,7 +63,7 @@
         "https://www.vinted.fi/*",
         "https://www.vinted.no/*"
       ],
-      "js": ["heic-to.js", "content.js", "enhance.js", "wand.js", "api.js", "panel.js", "form-tools.js"],
+      "js": ["heic-to.js", "content.js", "enhance.js", "wand.js", "api.js", "repost.js", "panel.js", "form-tools.js"],
       "run_at": "document_idle"
     }
   ],

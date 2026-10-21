@@ -15,6 +15,7 @@
   const TOGGLE_ID = "detniv-panel-toggle";
   const STYLE_ID = "detniv-panel-styles";
   const COLLAPSE_KEY = "detnivPanelCollapsed";
+  const REPOST_RESULT_KEY = "detnivRepostResult";
 
   const state = {
     view: "login",
@@ -188,6 +189,29 @@
         kind: "success",
         text: "Mot de passe réinitialisé. Connectez-vous.",
       };
+    });
+  }
+
+  function repostNotice(result) {
+    return {
+      kind: "success",
+      text:
+        result.count + " article(s) rechargé(s) sur " +
+        result.pages + " page(s).",
+    };
+  }
+
+  async function doRepost() {
+    await run(async () => {
+      const lib =
+        typeof DetnivRepost !== "undefined" ? DetnivRepost : globalThis.DetnivRepost;
+      if (!lib || typeof lib.start !== "function") {
+        throw new Error("module repost indisponible (repost.js)");
+      }
+      const result = await lib.start();
+      state.notice = result.navigating
+        ? { kind: "success", text: "Redirection vers votre garde-robe…" }
+        : repostNotice(result);
     });
   }
 
@@ -394,7 +418,10 @@
             } catch (_) {}
           },
         }),
-        menuItem({ label: "Republication", hint: "Bientôt" }),
+        menuItem({
+          label: "Republication",
+          onclick: () => doRepost(),
+        }),
         menuItem({ label: "Message aux favoris", hint: "Bientôt" }),
       ]),
       el("button", {
@@ -574,6 +601,19 @@
         state.view = "menu";
       }
     } catch (_) {}
+
+    // Résultat d'une republication lancée avant la navigation.
+    try {
+      const stored = await browser.storage.local.get(REPOST_RESULT_KEY);
+      const last = stored[REPOST_RESULT_KEY];
+      if (last && Date.now() - (last.at || 0) < 120000) {
+        state.notice = last.error
+          ? { kind: "error", text: "Republication : " + last.error }
+          : repostNotice(last);
+        await browser.storage.local.remove(REPOST_RESULT_KEY);
+      }
+    } catch (_) {}
+
     render();
   }
 
