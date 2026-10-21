@@ -3,15 +3,15 @@
  *   npm i --no-save jsdom
  *   node test/panel-tests.js
  *
- * Simule div.site-content, mocke browser.storage et fetch, charge api.js
- * puis panel.js, et vérifie : injection, connexion, erreurs, déconnexion,
- * inscription (code de vérification), mot de passe oublié, réduction.
+ * Simule div.next-page > div.standard-layout.is-wide, mocke browser.storage
+ * et fetch, charge api/api.js puis panel/panel.js, et vérifie : injection,
+ * connexion, erreurs, déconnexion, inscription (code de vérification),
+ * mot de passe oublié, réduction.
  */
 "use strict";
 
 const assert = require("node:assert");
 const fs = require("node:fs");
-const path = require("node:path");
 
 let JSDOM;
 let VirtualConsole;
@@ -24,15 +24,17 @@ try {
   process.exit(2);
 }
 
-const ROOT = path.join(__dirname, "..");
-const API_SRC = fs.readFileSync(path.join(ROOT, "api.js"), "utf8");
-const PANEL_SRC = fs.readFileSync(path.join(ROOT, "panel.js"), "utf8");
+const { SOURCES } = require("./sources");
+const API_SRC = fs.readFileSync(SOURCES.api, "utf8");
+const PANEL_SRC = fs.readFileSync(SOURCES.panel, "utf8");
 
 const FIXTURE_HTML = `<!DOCTYPE html>
 <html lang="fr">
 <head><meta charset="utf-8"><title>Vinted</title></head>
 <body>
-  <div class="site-content"><main id="main"></main></div>
+  <div class="next-page">
+    <div class="standard-layout is-wide"><main id="main"></main></div>
+  </div>
 </body>
 </html>`;
 
@@ -144,12 +146,17 @@ const LOGIN_OK = {
 };
 
 (async () => {
-  await test("panel : injecté dans .site-content, vue connexion par défaut", async () => {
+  await test("panel : inséré à côté de .standard-layout, vue connexion par défaut", async () => {
     const env = bootPanel({});
     await env.ready();
     const panel = env.panel();
     assert.ok(panel, "panneau absent");
-    assert.strictEqual(panel.parentElement.className, "site-content");
+    assert.ok(panel.parentElement.classList.contains("next-page"));
+    assert.strictEqual(
+      panel.nextElementSibling.className,
+      "standard-layout is-wide",
+      "panneau pas juste avant .standard-layout"
+    );
     assert.match(panel.textContent, /DETNIV/);
     assert.ok(panel.querySelector("input[type=email]"), "champ e-mail absent");
     assert.ok(panel.querySelector("input[type=password]"), "champ mot de passe absent");
@@ -376,18 +383,23 @@ const LOGIN_OK = {
     assert.ok(!env.panel().classList.contains("dv-collapsed"), "panneau non rouvert");
   });
 
-  await test("panel : le panneau survit au re-render de .site-content", async () => {
+  await test("panel : le panneau survit au re-render de .standard-layout", async () => {
     const env = bootPanel({});
     await env.ready();
     // Vinted recrée son conteneur (re-render React).
     const fresh = env.doc.createElement("div");
-    fresh.className = "site-content";
+    fresh.className = "standard-layout is-wide";
     fresh.appendChild(env.doc.createElement("main"));
-    env.doc.querySelector(".site-content").replaceWith(fresh);
+    env.doc.querySelector(".standard-layout").replaceWith(fresh);
     await sleep(250); // debounce de l'observer (150 ms)
     const panel = env.doc.getElementById("detniv-panel");
     assert.ok(panel, "panneau perdu après re-render");
-    assert.strictEqual(panel.parentElement.className, "site-content");
+    assert.ok(panel.parentElement.classList.contains("next-page"));
+    assert.strictEqual(
+      panel.nextElementSibling,
+      fresh,
+      "panneau pas réinséré avant le nouveau layout"
+    );
   });
 
   await test("panel : Republication appelle DetnivRepost.start()", async () => {
@@ -436,6 +448,107 @@ const LOGIN_OK = {
     const notice = env.panel().querySelector(".dv-notice--error");
     assert.ok(notice, "notice d'erreur absente");
     assert.match(notice.textContent, /Republication : HTTP 429/);
+  });
+
+  await test("panel : côte à côte — parent flex, sidebar sticky 288 px", async () => {
+    const env = bootPanel({});
+    await env.ready();
+    const panel = env.panel();
+    const host = env.doc.querySelector(".next-page");
+    const panelStyle = env.win.getComputedStyle(panel);
+    assert.notStrictEqual(panelStyle.position, "fixed", "panneau encore en fixed");
+    assert.strictEqual(panelStyle.position, "sticky");
+    assert.strictEqual(panel.parentElement, host, "panneau hors du parent du layout");
+    const hostStyle = env.win.getComputedStyle(host);
+    assert.strictEqual(hostStyle.display, "flex", ".next-page non flex");
+    const css = env.doc.getElementById("detniv-panel-styles").textContent;
+    assert.match(
+      css,
+      /\.dv-panel-host > \.standard-layout\s*\{\s*flex:\s*1 1 auto/,
+      "layout non étiré dans le flex"
+    );
+    assert.match(css, /flex:\s*0 0 288px/, "largeur fixe de la sidebar absente");
+  });
+
+  await test("panel : burger masqué en desktop", async () => {
+    const env = bootPanel({});
+    await env.ready();
+    const burger = env.doc.getElementById("detniv-burger");
+    assert.ok(burger, "burger absent du DOM");
+    assert.strictEqual(
+      env.win.getComputedStyle(burger).display,
+      "none",
+      "burger visible en desktop"
+    );
+  });
+
+  await test("panel : burger ouvre le tiroir, backdrop le ferme", async () => {
+    const env = bootPanel({});
+    await env.ready();
+    Object.defineProperty(env.win, "innerWidth", { value: 500, configurable: true });
+    const burger = env.doc.getElementById("detniv-burger");
+    await click(env.win, burger);
+    assert.ok(
+      env.panel().classList.contains("dv-mobile-open"),
+      "tiroir non ouvert"
+    );
+    const backdrop = env.doc.getElementById("detniv-panel-backdrop");
+    assert.ok(backdrop.classList.contains("dv-visible"), "backdrop masqué");
+    await click(env.win, backdrop);
+    assert.ok(
+      !env.panel().classList.contains("dv-mobile-open"),
+      "tiroir non fermé par le backdrop"
+    );
+    assert.ok(!backdrop.classList.contains("dv-visible"), "backdrop encore visible");
+  });
+
+  await test("panel : mode sm — la croix ferme le tiroir sans replier la sidebar", async () => {
+    const env = bootPanel({});
+    await env.ready();
+    Object.defineProperty(env.win, "innerWidth", { value: 500, configurable: true });
+    await click(env.win, env.doc.getElementById("detniv-burger"));
+    await click(env.win, env.panel().querySelector(".dv-collapse"));
+    assert.ok(
+      !env.panel().classList.contains("dv-mobile-open"),
+      "tiroir non fermé par la croix"
+    );
+    assert.ok(
+      !env.panel().classList.contains("dv-collapsed"),
+      "sidebar repliée au lieu du tiroir fermé"
+    );
+  });
+
+  await test("panel : Échap ferme le tiroir mobile", async () => {
+    const env = bootPanel({});
+    await env.ready();
+    Object.defineProperty(env.win, "innerWidth", { value: 500, configurable: true });
+    await click(env.win, env.doc.getElementById("detniv-burger"));
+    assert.ok(env.panel().classList.contains("dv-mobile-open"));
+    env.doc.dispatchEvent(
+      new env.win.KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+    );
+    assert.ok(
+      !env.panel().classList.contains("dv-mobile-open"),
+      "tiroir non fermé par Échap"
+    );
+  });
+
+  await test("panel : resize sm → desktop referme le tiroir", async () => {
+    const env = bootPanel({});
+    await env.ready();
+    Object.defineProperty(env.win, "innerWidth", { value: 500, configurable: true });
+    await click(env.win, env.doc.getElementById("detniv-burger"));
+    assert.ok(env.panel().classList.contains("dv-mobile-open"));
+    Object.defineProperty(env.win, "innerWidth", { value: 1280, configurable: true });
+    env.win.dispatchEvent(new env.win.Event("resize"));
+    assert.ok(
+      !env.panel().classList.contains("dv-mobile-open"),
+      "tiroir encore ouvert après retour desktop"
+    );
+    assert.ok(
+      !env.doc.getElementById("detniv-panel-backdrop").classList.contains("dv-visible"),
+      "backdrop encore visible"
+    );
   });
 
   for (const r of results) {

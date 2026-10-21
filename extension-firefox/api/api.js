@@ -9,7 +9,7 @@
  * pour un chargement temporaire via about:debugging).
  *
  * Session (jetons) stockée dans browser.storage.local.
- * Utilisé par panel.js : DetnivApi.handle(action, payload) → data | throw.
+ * Utilisé par panel/panel.js : DetnivApi.handle(action, payload) → data | throw.
  */
 (function (root, factory) {
   "use strict";

@@ -102,10 +102,12 @@ def generate(size):
         pixels.append(row)
     return pixels
 
-os.makedirs("icons", exist_ok=True)
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ICONS_DIR = os.path.join(ROOT, "icons")
+os.makedirs(ICONS_DIR, exist_ok=True)
 for sz in (16, 32, 48, 96, 128):
     png = make_png(sz, sz, generate(sz))
-    path = f"icons/icon{sz}.png"
+    path = os.path.join(ICONS_DIR, f"icon{sz}.png")
     with open(path, "wb") as f:
         f.write(png)
     print(f"  {path}  ({len(png)} bytes)")

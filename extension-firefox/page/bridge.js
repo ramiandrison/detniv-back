@@ -1,5 +1,5 @@
 /**
- * bridge.js — exécuté dans le MONDE PAGE (injecté par wand.js).
+ * bridge.js — exécuté dans le MONDE PAGE (injecté par features/creation/wand.js).
  *
  * Rôle : tout ce qui nécessite d'accéder au React de Vinted ou au
  * contexte réseau identique à celui de la page :
@@ -66,7 +66,7 @@
         url: p.url,
         tempUuid: p.tempUuid || null,
         highResolution: p.highResolution || null,
-        // Jeton posé par wand.js sur l'objet photo : il est stocké tel quel
+        // Jeton posé par features/creation/wand.js sur l'objet photo : il est stocké tel quel
         // par replacePhoto et survit à tout ré-agencement des ids serveur.
         detniv: typeof p.__detniv === "string" ? p.__detniv : null,
       })),

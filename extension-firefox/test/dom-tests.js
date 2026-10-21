@@ -4,15 +4,14 @@
  *   node test/dom-tests.js
  *
  * Simule la page Vinted (grille + vignettes + fiber React + fetch),
- * charge enhance.js / wand.js / bridge.js comme le ferait le navigateur,
- * puis vérifie le parcours complet :
+ * charge lib/enhance.js, features/creation/wand.js et page/bridge.js comme le
+ * ferait le navigateur, puis vérifie le parcours complet :
  *   injection des boutons → améliorer → état Vinted remplacé → annuler.
  */
 "use strict";
 
 const assert = require("node:assert");
 const fs = require("node:fs");
-const path = require("node:path");
 
 let JSDOM;
 let requestInterceptor;
@@ -25,7 +24,7 @@ try {
   process.exit(2);
 }
 
-const ROOT = path.join(__dirname, "..");
+const { SOURCES } = require("./sources");
 const CSRF_TOKEN = "75f6c9fa-dc8e-4e52-a000-e09dd4084b3e";
 const PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
@@ -74,15 +73,14 @@ const FIXTURE_HTML = `<!DOCTYPE html>
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** Sert bridge.js comme le ferait browser.runtime.getURL(). */
+/** Sert page/bridge.js comme le ferait browser.runtime.getURL(). */
 const extensionResources = {
   interceptors: [
     requestInterceptor((request) => {
-      if (request.url === "https://extension.local/bridge.js") {
-        return new Response(
-          fs.readFileSync(path.join(ROOT, "bridge.js"), "utf8"),
-          { headers: { "Content-Type": "application/javascript" } }
-        );
+      if (request.url === "https://extension.local/page/bridge.js") {
+        return new Response(fs.readFileSync(SOURCES.bridge, "utf8"), {
+          headers: { "Content-Type": "application/javascript" },
+        });
       }
     }),
   ],
@@ -229,13 +227,13 @@ async function main() {
 
   /* ── Chargement des scripts ── */
 
-  win.eval(fs.readFileSync(path.join(ROOT, "enhance.js"), "utf8"));
+  win.eval(fs.readFileSync(SOURCES.enhance, "utf8"));
   win.DetnivEnhance = {
     // Repasse après enhance.js : canvas absent de jsdom.
     maybeHeic: async () => false,
     enhanceBlob: async () => new win.Blob(["improved"], { type: "image/jpeg" }),
   };
-  win.eval(fs.readFileSync(path.join(ROOT, "wand.js"), "utf8"));
+  win.eval(fs.readFileSync(SOURCES.wand, "utf8"));
 
   // Les images jsdom ne se chargent pas : on signale « prête ».
   for (const img of doc.querySelectorAll("img")) {

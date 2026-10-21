@@ -12,7 +12,6 @@
 
 const assert = require("node:assert");
 const fs = require("node:fs");
-const path = require("node:path");
 
 let JSDOM;
 let VirtualConsole;
@@ -25,8 +24,8 @@ try {
   process.exit(2);
 }
 
-const ROOT = path.join(__dirname, "..");
-const SRC = fs.readFileSync(path.join(ROOT, "form-tools.js"), "utf8");
+const { SOURCES } = require("./sources");
+const FORM_TOOLS_SRC = fs.readFileSync(SOURCES.formTools, "utf8");
 
 const FIXTURE_HTML = `<!DOCTYPE html>
 <html lang="fr">
@@ -154,7 +153,7 @@ function boot({ loggedIn = true, apiFail = false } = {}) {
   };
 
   win.confirm = () => true;
-  win.eval(SRC);
+  win.eval(FORM_TOOLS_SRC);
   return {
     win,
     doc: win.document,

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Vinted HEIC Importer",
-  "version": "1.6.0",
+  "version": "1.6.4",
   "description": "Importez des photos HEIC/HEIF sur Vinted — conversion automatique en JPEG ou PNG, amélioration instantanée des photos (baguette magique) et panneau Detniv (connexion, création d'annonce, republication).",
   "browser_specific_settings": {
     "gecko": {
@@ -11,7 +11,7 @@
   },
   "permissions": ["storage", "cookies"],
   "background": {
-    "scripts": ["background.js"]
+    "scripts": ["background/background.js"]
   },
   "host_permissions": [
     "https://www.vinted.fr/*",
@@ -63,13 +63,22 @@
         "https://www.vinted.fi/*",
         "https://www.vinted.no/*"
       ],
-      "js": ["heic-to.js", "content.js", "enhance.js", "wand.js", "api.js", "repost.js", "panel.js", "form-tools.js"],
+      "js": [
+        "lib/heic-to.js",
+        "lib/enhance.js",
+        "api/api.js",
+        "features/heic/heic-import.js",
+        "features/creation/wand.js",
+        "features/creation/form-tools.js",
+        "features/republication/repost.js",
+        "panel/panel.js"
+      ],
       "run_at": "document_idle"
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["bridge.js"],
+      "resources": ["page/bridge.js"],
       "matches": [
         "https://www.vinted.fr/*",
         "https://www.vinted.com/*",
@@ -97,7 +106,7 @@
     }
   ],
   "action": {
-    "default_popup": "popup.html",
+    "default_popup": "popup/popup.html",
     "default_title": "Vinted HEIC Importer",
     "default_icon": {
       "16": "icons/icon16.png",

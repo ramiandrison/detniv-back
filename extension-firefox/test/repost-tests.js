@@ -12,7 +12,6 @@
 
 const assert = require("node:assert");
 const fs = require("node:fs");
-const path = require("node:path");
 
 let JSDOM;
 let VirtualConsole;
@@ -25,8 +24,8 @@ try {
   process.exit(2);
 }
 
-const ROOT = path.join(__dirname, "..");
-const SRC = fs.readFileSync(path.join(ROOT, "repost.js"), "utf8");
+const { SOURCES } = require("./sources");
+const REPOST_SRC = fs.readFileSync(SOURCES.repost, "utf8");
 
 // Card SSR reproduite à partir de vinted-pages/govaaaaa - member profile _ Vinted.htm
 // (classes conservées pour le clonage, testids simplifiés).
@@ -191,7 +190,7 @@ function boot({
     return Promise.resolve({ ok: true, status: 200, json: async () => body });
   };
 
-  win.eval(SRC);
+  win.eval(REPOST_SRC);
   return {
     win,
     doc: win.document,

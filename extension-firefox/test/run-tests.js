@@ -1,13 +1,14 @@
 /**
  * Tests de l'extension — exécutés avec : node test/run-tests.js
  *
- * 1. enhance.js  : fonctions pures (auto-niveaux, flou, masque de flou)
- * 2. bridge.js   : protocole postMessage + contexte React mocké + upload
+ * 1. lib/enhance.js : fonctions pures (auto-niveaux, flou, masque de flou)
+ * 2. page/bridge.js : protocole postMessage + contexte React mocké + upload
  */
 "use strict";
 
 const assert = require("node:assert");
-const path = require("node:path");
+
+const { SOURCES } = require("./sources");
 
 const results = [];
 let failures = 0;
@@ -28,7 +29,7 @@ const flush = async (ticks = 8) => {
 
 /* ════════════════ 1. enhance.js ════════════════ */
 
-const enhance = require(path.join(__dirname, "..", "enhance.js"));
+const enhance = require(SOURCES.enhance);
 
 function makeImage(width, height, fn) {
   const data = new Uint8ClampedArray(width * height * 4);
@@ -271,7 +272,7 @@ async function call(env, method, params) {
 
 async function runBridgeTests() {
   const env = buildBridgeEnv();
-  require(path.join(__dirname, "..", "bridge.js"));
+  require(SOURCES.bridge);
 
   await test("bridge : handler de message enregistré", () => {
     assert.ok(env.handlers().length >= 1, "aucun handler message");

@@ -8,7 +8,8 @@
 "use strict";
 
 const assert = require("node:assert");
-const path = require("node:path");
+
+const { SOURCES } = require("./sources");
 
 const results = [];
 let failures = 0;
@@ -77,7 +78,7 @@ function mockFetch(url, options) {
 (async () => {
   global.browser = makeBrowser();
   global.fetch = mockFetch;
-  const api = require(path.join(__dirname, "..", "api.js"));
+  const api = require(SOURCES.api);
 
   fetchRoutes["http://localhost:3001/api/auth/login"] = {
     status: 200,

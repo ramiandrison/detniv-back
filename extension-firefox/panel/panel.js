@@ -1,21 +1,27 @@
 /**
- * panel.js — content script : panneau Detniv à gauche de div.site-content.
+ * panel.js — content script : panneau Detniv en sidebar à gauche de la page
+ * Vinted, inséré à côté de div.standard-layout.is-wide (dans son parent,
+ * en flex : panneau 288px + page). Sous 959 px (mode sm), la sidebar devient
+ * un tiroir ouvert par un burger, avec backdrop et Échap.
  *
  * Déconnecté : onglets Connexion / Créer un compte + mot de passe oublié
  * (et vérification du code e-mail envoyé à l'inscription).
  * Connecté   : menu — Créer une annonce, Republication, Message aux favoris,
  * + Déconnexion.
  *
- * Toutes les requêtes API passent par api.js (DetnivApi.handle).
+ * Toutes les requêtes API passent par api/api.js (DetnivApi.handle).
  */
 (() => {
   "use strict";
 
   const PANEL_ID = "detniv-panel";
   const TOGGLE_ID = "detniv-panel-toggle";
+  const BURGER_ID = "detniv-burger";
+  const BACKDROP_ID = "detniv-panel-backdrop";
   const STYLE_ID = "detniv-panel-styles";
   const COLLAPSE_KEY = "detnivPanelCollapsed";
   const REPOST_RESULT_KEY = "detnivRepostResult";
+  const MOBILE_MAX_WIDTH = 959;
 
   const state = {
     view: "login",
@@ -24,7 +30,13 @@
     notice: null,
     pending: null,
     collapsed: false,
+    mobileOpen: false,
   };
+
+  /** Mode « sm » : le panneau devient un tiroir ouvert par le burger. */
+  function isMobile() {
+    return (window.innerWidth || 0) <= MOBILE_MAX_WIDTH;
+  }
 
   /* ──────────────── Pont vers l'API (api.js) ──────────────── */
 
@@ -491,7 +503,14 @@
           type: "button",
           title: "Réduire le panneau",
           text: "‹",
-          onclick: () => setCollapsed(true),
+          onclick: () => {
+            if (isMobile()) {
+              state.mobileOpen = false;
+              syncDom();
+            } else {
+              setCollapsed(true);
+            }
+          },
         }),
       ]),
       el("div", { class: "dv-notice-slot" }),
@@ -511,6 +530,34 @@
     });
   }
 
+  function buildBurger() {
+    return el("button", {
+      id: BURGER_ID,
+      type: "button",
+      title: "Ouvrir le menu Detniv",
+      "aria-label": "Ouvrir le menu Detniv",
+      onclick: () => {
+        state.mobileOpen = true;
+        syncDom();
+      },
+    }, [
+      el("span", { class: "dv-burger-bar" }),
+      el("span", { class: "dv-burger-bar" }),
+      el("span", { class: "dv-burger-bar" }),
+    ]);
+  }
+
+  function buildBackdrop() {
+    return el("div", {
+      id: BACKDROP_ID,
+      "aria-hidden": "true",
+      onclick: () => {
+        state.mobileOpen = false;
+        syncDom();
+      },
+    });
+  }
+
   function setCollapsed(collapsed) {
     state.collapsed = collapsed;
     try {
@@ -521,15 +568,33 @@
 
   /* ──────────────── Injection (SPA-safe) ──────────────── */
 
+  function layoutNode() {
+    return document.querySelector(".standard-layout");
+  }
+
+  function hostNode() {
+    const layout = layoutNode();
+    if (layout && layout.parentElement) return layout.parentElement;
+    return document.querySelector(".site-content") || document.body;
+  }
+
   function panelHosted() {
     const panel = document.getElementById(PANEL_ID);
-    const host = document.querySelector(".site-content") || document.body;
-    return !!(panel && host && panel.parentElement === host);
+    const layout = layoutNode();
+    if (!panel) return false;
+    if (layout && layout.parentElement) {
+      return (
+        panel.parentElement === layout.parentElement &&
+        panel.nextElementSibling === layout
+      );
+    }
+    return panel.parentElement === hostNode();
   }
 
   function ensureAttached() {
-    const host = document.querySelector(".site-content") || document.body;
+    const host = hostNode();
     if (!host) return false;
+    const layout = layoutNode();
 
     let created = false;
     let panel = document.getElementById(PANEL_ID);
@@ -537,7 +602,17 @@
       panel = buildPanel();
       created = true;
     }
-    if (panel.parentElement !== host) host.appendChild(panel);
+    if (layout && layout.parentElement === host) {
+      // Côte à côte : juste avant .standard-layout, dans le même parent.
+      if (panel.parentElement !== host || panel.nextElementSibling !== layout) {
+        host.insertBefore(panel, layout);
+      }
+      host.classList.add("dv-panel-host");
+      host.classList.toggle("dv-panel-collapsed", state.collapsed);
+    } else {
+      if (panel.parentElement !== host) host.appendChild(panel);
+      host.classList.remove("dv-panel-host", "dv-panel-collapsed");
+    }
 
     let toggle = document.getElementById(TOGGLE_ID);
     if (!toggle) {
@@ -545,7 +620,22 @@
       document.body.appendChild(toggle);
     }
     toggle.style.display = state.collapsed ? "" : "none";
+
+    let burger = document.getElementById(BURGER_ID);
+    if (!burger) {
+      burger = buildBurger();
+      document.body.appendChild(burger);
+    }
+
+    let backdrop = document.getElementById(BACKDROP_ID);
+    if (!backdrop) {
+      backdrop = buildBackdrop();
+      document.body.appendChild(backdrop);
+    }
+
     panel.classList.toggle("dv-collapsed", state.collapsed);
+    panel.classList.toggle("dv-mobile-open", state.mobileOpen);
+    backdrop.classList.toggle("dv-visible", state.mobileOpen);
 
     if (created) render();
     return true;
@@ -594,6 +684,22 @@
       subtree: true,
     });
 
+    // Échap ferme le tiroir mobile.
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && state.mobileOpen) {
+        state.mobileOpen = false;
+        syncDom();
+      }
+    });
+
+    // Un passage en mode sm referme le tiroir.
+    window.addEventListener("resize", () => {
+      if (!isMobile() && state.mobileOpen) {
+        state.mobileOpen = false;
+      }
+      syncDom();
+    });
+
     try {
       const session = await call("session.get");
       if (session && session.user) {
@@ -618,12 +724,23 @@
   }
 
   const CSS = `
+    /* Panneau côte à côte avec .standard-layout, dans son parent flex. */
+    .dv-panel-host {
+      display: flex;
+      align-items: flex-start;
+    }
+    .dv-panel-host > .standard-layout {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+    .dv-panel-host.dv-panel-collapsed { display: block; }
     #${PANEL_ID} {
-      position: fixed;
-      top: 53px;
-      left: 0;
-      bottom: 0;
+      flex: 0 0 288px;
       width: 288px;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      height: 100dvh;
       z-index: 2147483645;
       display: flex;
       flex-direction: column;
@@ -798,6 +915,68 @@
       cursor: pointer;
     }
     #${TOGGLE_ID}:hover { border-color: #ffd600; }
+
+    #${BACKDROP_ID} { display: none; }
+
+    #${BURGER_ID} {
+      display: none;
+      position: fixed;
+      left: 12px;
+      top: 72px;
+      z-index: 2147483645;
+      width: 42px;
+      height: 42px;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      padding: 0;
+      border-radius: 999px;
+      background: #0d0d0d;
+      border: 1px solid #2a2a2a;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, .5);
+      cursor: pointer;
+    }
+    #${BURGER_ID}:hover { border-color: #ffd600; }
+    #${BURGER_ID} .dv-burger-bar {
+      display: block;
+      width: 18px;
+      height: 2px;
+      border-radius: 2px;
+      background: #ffd600;
+    }
+
+    /* Mode sm : la sidebar devient un tiroir ouvert par le burger. */
+    @media (max-width: ${MOBILE_MAX_WIDTH}px) {
+      .dv-panel-host,
+      .dv-panel-host.dv-panel-collapsed {
+        display: block;
+      }
+      #${PANEL_ID},
+      #${PANEL_ID}.dv-collapsed {
+        display: flex;
+        position: fixed;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        height: 100vh;
+        height: 100dvh;
+        width: min(288px, 86vw);
+        transform: translateX(-100%);
+        transition: transform .22s ease;
+        z-index: 2147483647;
+      }
+      #${PANEL_ID}.dv-mobile-open { transform: translateX(0); }
+      #${BURGER_ID} { display: flex; }
+      #${TOGGLE_ID} { display: none !important; }
+      #${BACKDROP_ID}.dv-visible {
+        display: block;
+        position: fixed;
+        inset: 0;
+        z-index: 2147483646;
+        background: rgba(0, 0, 0, .5);
+      }
+    }
   `;
 
   if (document.readyState === "loading") {

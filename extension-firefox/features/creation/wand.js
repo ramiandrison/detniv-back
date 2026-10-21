@@ -7,7 +7,7 @@
  *     → téléverser via le bridge → remplacer la photo dans l'état Vinted
  *   - « Annuler l'amélioration » : renvoie l'original (nouvel id serveur)
  *
- * Tout accès à React / au réseau identique à la page passe par bridge.js.
+ * Tout accès à React / au réseau identique à la page passe par page/bridge.js.
  */
 (() => {
   "use strict";
@@ -127,7 +127,7 @@
 
     if (!document.querySelector(`script[${BRIDGE_FLAG}]`)) {
       const script = document.createElement("script");
-      script.src = browser.runtime.getURL("bridge.js");
+      script.src = browser.runtime.getURL("page/bridge.js");
       script.setAttribute(BRIDGE_FLAG, "1");
       try {
         await new Promise((resolve, reject) => {

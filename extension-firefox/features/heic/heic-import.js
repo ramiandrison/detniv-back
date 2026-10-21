@@ -1,3 +1,10 @@
+/**
+ * heic-import.js — content script : import des photos HEIC/HEIF sur Vinted.
+ *
+ * Intercepte les inputs fichier et le glisser-déposer, convertit en JPEG/PNG
+ * via lib/heic-to.js, avec une barre de progression. Les réglages (format,
+ * qualité) viennent du popup (browser.storage.local).
+ */
 (function () {
   "use strict";
 
