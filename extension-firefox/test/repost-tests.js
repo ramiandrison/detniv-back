@@ -34,6 +34,18 @@ const FIXTURE_HTML = `<!DOCTYPE html>
 <head><meta charset="utf-8"><title>govaaaaa - member profile | Vinted</title></head>
 <body>
   <div class="site-content">
+    <div class="u-flexbox" data-testid="closet-seller-filters">
+      <button type="button" data-testid="closet-seller-filters-active" aria-pressed="true">
+        <div class="web_ui__Chip__text">
+          <span data-testid="closet-seller-filters-active--text">Actifs</span>
+        </div>
+      </button>
+      <button type="button" data-testid="closet-seller-filters-hidden" aria-pressed="false">
+        <div class="web_ui__Chip__text">
+          <span data-testid="closet-seller-filters-hidden--text">Masqués</span>
+        </div>
+      </button>
+    </div>
     <div class="u-ui-margin-horizontal-regular@portables" id="closet">
       <div class="Grid-module-scss-module__HmDNda__feed-grid">
         <div data-testid="grid-item" class="Grid-module-scss-module__HmDNda__feed-grid__item Grid-module-scss-module__HmDNda__feed-grid__item--one-fifth">
@@ -55,7 +67,11 @@ const FIXTURE_HTML = `<!DOCTYPE html>
                     <p data-testid="product-item-id-10409527710--price-text">45,64&nbsp;€</p>
                   </div>
                   <div data-testid="product-item-id-10409527710--footer">
-                    <button type="button" data-testid="bump-button">Booster</button>
+                    <button type="button" class="web_ui__Button__button web_ui__Button__outlined" data-testid="bump-button">
+                      <span class="web_ui__Button__content">
+                        <span class="web_ui__Button__label">Booster</span>
+                      </span>
+                    </button>
                   </div>
                 </div>
               </div>
@@ -126,6 +142,10 @@ function boot({
   cookie,
   runtimeCookie,
   seedStore,
+  autoWardrobe,
+  activePressed,
+  ownProfile,
+  csrf,
 } = {}) {
   const virtualConsole = new VirtualConsole();
   virtualConsole.on("jsdomError", () => {});
@@ -166,6 +186,45 @@ function boot({
           },
   };
   if (cookie) win.document.cookie = "v_uid=" + cookie + "; path=/";
+  if (autoWardrobe) {
+    win.sessionStorage.setItem("detnivRepostAuto", String(autoWardrobe));
+  }
+  if (ownProfile) {
+    const filters = win.document.querySelector(
+      '[data-testid="closet-seller-filters"]'
+    );
+    if (filters) {
+      const draft = win.document.createElement("button");
+      draft.type = "button";
+      draft.setAttribute("data-testid", "closet-seller-filters-draft");
+      draft.setAttribute("aria-pressed", "false");
+      draft.innerHTML =
+        '<div class="web_ui__Chip__text">' +
+        '<span data-testid="closet-seller-filters-draft--text">Brouillons</span>' +
+        "</div>";
+      filters.appendChild(draft);
+    }
+  }
+  if (csrf) {
+    const script = win.document.createElement("script");
+    script.textContent =
+      'self.__next_f.push([1,"\\"CSRF_TOKEN\\":\\"' + csrf + '\\""])';
+    win.document.body.appendChild(script);
+  }
+
+  let activeFilterClicks = 0;
+  const activeButton = win.document.querySelector(
+    '[data-testid="closet-seller-filters-active"]'
+  );
+  if (activeButton) {
+    if (activePressed !== undefined) {
+      activeButton.setAttribute("aria-pressed", activePressed ? "true" : "false");
+    }
+    activeButton.addEventListener("click", () => {
+      activeFilterClicks++;
+      activeButton.setAttribute("aria-pressed", "true");
+    });
+  }
 
   win.fetch = (fetchUrl, options) => {
     fetchLog.push({ url: String(fetchUrl), options });
@@ -202,6 +261,7 @@ function boot({
     },
     repost: () => win.DetnivRepost,
     closet: () => win.document.getElementById("closet"),
+    activeFilterClicks: () => activeFilterClicks,
   };
 }
 
@@ -299,6 +359,48 @@ const WARDROBE = "https://www.vinted.fr/api/v2/wardrobe/251881314/items";
     ]);
   });
 
+  await test("repost : run envoie le jeton CSRF lu dans la page", async () => {
+    const env = boot({
+      csrf: "test-csrf-token",
+      pages: {
+        [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
+          [makeItem({ id: 16 })], 1, 1, 1
+        ),
+      },
+    });
+    await env.repost().run();
+    assert.strictEqual(env.fetchLog.length, 1);
+    assert.strictEqual(
+      env.fetchLog[0].options.headers["X-CSRF-Token"],
+      "test-csrf-token"
+    );
+  });
+
+  await test("repost : run sélectionne Actifs avant de charger la garde-robe", async () => {
+    const env = boot({
+      activePressed: false,
+      pages: {
+        [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
+          [makeItem({ id: 17, title: "Veste", brand_title: "Carhartt", size_title: "L" })],
+          1, 1, 1
+        ),
+      },
+    });
+
+    const result = await env.repost().run();
+    assert.strictEqual(env.activeFilterClicks(), 1, "Actifs non cliqué");
+    assert.strictEqual(
+      env.doc
+        .querySelector('[data-testid="closet-seller-filters-active"]')
+        .getAttribute("aria-pressed"),
+      "true"
+    );
+    assert.strictEqual(env.fetchLog.length, 1, "fetch avant sélection du filtre");
+    assert.strictEqual(result.count, 1);
+    const card = env.closet().querySelector('[data-testid="grid-item"]');
+    assert.strictEqual(card.querySelector(".detniv-repost-name").textContent, "Veste");
+  });
+
   await test("repost : card rendue avec image, lien, titre, prix, vues", async () => {
     const env = boot({
       pages: {
@@ -307,6 +409,9 @@ const WARDROBE = "https://www.vinted.fr/api/v2/wardrobe/251881314/items";
             makeItem({
               id: 777,
               title: "Robe été",
+              brand_title: "Zara",
+              size_title: "M",
+              promoted: false,
               price: { amount: "19.99", currency_code: "EUR" },
               view_count: 3,
               path: "/items/777",
@@ -325,6 +430,18 @@ const WARDROBE = "https://www.vinted.fr/api/v2/wardrobe/251881314/items";
     const link = card.querySelector("a");
     assert.strictEqual(link.getAttribute("href"), "https://www.vinted.fr/items/777");
     assert.strictEqual(link.title, "Robe été");
+    const name = card.querySelector(".detniv-repost-name");
+    assert.ok(name, "nom de l'article absent");
+    assert.strictEqual(name.textContent, "Robe été");
+    const meta = card.querySelector(".detniv-repost-meta");
+    assert.ok(meta, "marque/taille absentes");
+    assert.strictEqual(meta.textContent, "Zara · M");
+    const titleContainer = card.querySelector('[data-testid$="--title-container"]');
+    assert.strictEqual(titleContainer.firstElementChild, name, "nom pas en première position");
+    assert.strictEqual(titleContainer.children[1], meta, "méta pas juste après le nom");
+    const styles = env.doc.getElementById("detniv-repost-styles");
+    assert.ok(styles, "styles des cards absents");
+    assert.match(styles.textContent, /\.detniv-repost-name/);
     assert.strictEqual(
       card.querySelector('[data-testid$="--price-text"]').textContent,
       "19,99 €"
@@ -338,7 +455,38 @@ const WARDROBE = "https://www.vinted.fr/api/v2/wardrobe/251881314/items";
       "",
       "favoris hérités du template non vidés"
     );
-    assert.ok(!card.querySelector('[data-testid="bump-button"]'), "bouton Booster cloné conservé");
+    assert.strictEqual(
+      card.getAttribute("data-detniv-repost"),
+      "1",
+      "marqueur de card Detniv absent"
+    );
+    const bump = card.querySelector('[data-testid="bump-button"]');
+    assert.ok(bump, "bouton Booster absent");
+    assert.strictEqual(
+      bump.querySelector(".web_ui__Button__label").textContent,
+      "Booster",
+      "libellé incorrect pour un article non promu"
+    );
+  });
+
+  await test("repost : bouton Booster → « Boosté » si article promu", async () => {
+    const env = boot({
+      pages: {
+        [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
+          [makeItem({ id: 778, title: "Veste", promoted: true })],
+          1, 1, 1
+        ),
+      },
+    });
+    await env.repost().run();
+    const card = env.closet().querySelector('[data-testid="grid-item"]');
+    const bump = card.querySelector('[data-testid="bump-button"]');
+    assert.ok(bump, "bouton Booster absent");
+    assert.strictEqual(
+      bump.querySelector(".web_ui__Button__label").textContent,
+      "Boosté",
+      "libellé incorrect pour un article promu"
+    );
   });
 
   await test("repost : vue singulière (1 vue)", async () => {
@@ -359,7 +507,15 @@ const WARDROBE = "https://www.vinted.fr/api/v2/wardrobe/251881314/items";
       html: FIXTURE_NO_CARD_HTML,
       pages: {
         [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
-          [makeItem({ id: 9, title: "Sac", price: { amount: "5", currency_code: "EUR" } })],
+          [
+            makeItem({
+              id: 9,
+              title: "Sac",
+              brand_title: "Coach",
+              size_title: "Unique",
+              price: { amount: "5", currency_code: "EUR" },
+            }),
+          ],
           1, 1, 1
         ),
       },
@@ -369,7 +525,263 @@ const WARDROBE = "https://www.vinted.fr/api/v2/wardrobe/251881314/items";
     const card = env.closet().querySelector('[data-testid="grid-item"]');
     assert.ok(card, "card de repli absente");
     assert.strictEqual(card.querySelector("img").alt, "Sac");
-    assert.strictEqual(card.querySelector("p").textContent, "5,00 €");
+    assert.strictEqual(card.querySelector(".detniv-repost-name").textContent, "Sac");
+    assert.strictEqual(card.querySelector(".detniv-repost-meta").textContent, "Coach · Unique");
+    assert.strictEqual(
+      card.querySelector("p.web_ui__Text__caption").textContent,
+      "5,00 €"
+    );
+  });
+
+
+  await test("repost : sans marque ni taille → nom seul, pas de méta", async () => {
+    const env = boot({
+      pages: {
+        [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
+          [
+            makeItem({
+              id: 10,
+              title: "Vase",
+              brand_title: null,
+              size_title: "",
+              brand: 42,
+              size: 7,
+            }),
+          ],
+          1, 1, 1
+        ),
+      },
+    });
+    await env.repost().run();
+    const card = env.closet().querySelector('[data-testid="grid-item"]');
+    assert.strictEqual(card.querySelector(".detniv-repost-name").textContent, "Vase");
+    assert.strictEqual(card.querySelector(".detniv-repost-meta"), null);
+  });
+
+  await test("repost : repli brand/size (objet ou chaîne) si *_title absent", async () => {
+    const env = boot({
+      pages: {
+        [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
+          [
+            makeItem({
+              id: 11,
+              title: "Manteau",
+              brand_title: "",
+              size_title: "",
+              brand: { title: "Zara" },
+              size: "XL",
+            }),
+          ],
+          1, 1, 1
+        ),
+      },
+    });
+    await env.repost().run();
+    const meta = env.closet().querySelector(".detniv-repost-meta");
+    assert.ok(meta, "méta absente");
+    assert.strictEqual(meta.textContent, "Zara · XL");
+  });
+
+  await test("repost : second run ne duplique ni identité ni styles", async () => {
+    const env = boot({
+      pages: {
+        [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
+          [
+            makeItem({
+              id: 12,
+              title: "Pull",
+              brand_title: "Uniqlo",
+              size_title: "L",
+            }),
+          ],
+          1, 1, 1
+        ),
+      },
+    });
+    await env.repost().run();
+    await env.repost().run();
+    const card = env.closet().querySelector('[data-testid="grid-item"]');
+    assert.strictEqual(card.querySelectorAll(".detniv-repost-name").length, 1);
+    assert.strictEqual(card.querySelectorAll(".detniv-repost-meta").length, 1);
+    assert.strictEqual(
+      env.doc.querySelectorAll("#detniv-repost-styles").length,
+      1,
+      "feuille de styles dupliquée"
+    );
+  });
+
+  await test("repost : clic Actifs sans cache → charge la garde-robe active", async () => {
+    const env = boot({
+      pages: {
+        [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
+          [makeItem({ id: 25, title: "Short", brand_title: "Nike", size_title: "M" })],
+          1, 1, 1
+        ),
+      },
+    });
+    env.doc
+      .querySelector('[data-testid="closet-seller-filters-active--text"]')
+      .click();
+    await sleep(250);
+
+    assert.strictEqual(env.fetchLog.length, 1, "API non appelée");
+    const card = env.closet().querySelector('[data-testid="grid-item"]');
+    assert.strictEqual(card.querySelector(".detniv-repost-name").textContent, "Short");
+    assert.strictEqual(card.querySelector(".detniv-repost-meta").textContent, "Nike · M");
+  });
+
+  await test("repost : clic sur le filtre Actifs → re-rendu après re-render React", async () => {
+    const env = boot({
+      pages: {
+        [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
+          [
+            makeItem({
+              id: 21,
+              title: "Chemise",
+              brand_title: "Zara",
+              size_title: "M",
+            }),
+          ],
+          1, 1, 1
+        ),
+      },
+    });
+    const grid = env.closet().querySelector('[class*="feed-grid"]');
+    const ssrGrid = grid.innerHTML;
+    await env.repost().run();
+    assert.strictEqual(
+      env.closet().querySelector(".detniv-repost-name").textContent,
+      "Chemise"
+    );
+
+    env.doc
+      .querySelector('[data-testid="closet-seller-filters-active--text"]')
+      .click();
+    await sleep(200);
+    // Simule le rendu React asynchrone : la grille revient au contenu SSR.
+    grid.innerHTML = ssrGrid;
+    await sleep(300);
+
+    const cards = env.closet().querySelectorAll('[data-testid="grid-item"]');
+    assert.strictEqual(cards.length, 1);
+    assert.strictEqual(
+      cards[0].querySelector(".detniv-repost-name").textContent,
+      "Chemise"
+    );
+    assert.strictEqual(
+      cards[0].querySelector(".detniv-repost-meta").textContent,
+      "Zara · M"
+    );
+  });
+
+  await test("repost : clic sur un autre filtre → pas de re-rendu", async () => {
+    const env = boot({
+      pages: {
+        [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
+          [makeItem({ id: 22, title: "Jupe", brand_title: "H&M", size_title: "S" })],
+          1, 1, 1
+        ),
+      },
+    });
+    const grid = env.closet().querySelector('[class*="feed-grid"]');
+    const ssrGrid = grid.innerHTML;
+    await env.repost().run();
+
+    const hidden = env.doc.querySelector(
+      '[data-testid="closet-seller-filters-hidden"]'
+    );
+    hidden.click();
+    // Simule l'état React après le clic : Actifs n'est plus sélectionné.
+    env.doc
+      .querySelector('[data-testid="closet-seller-filters-active"]')
+      .setAttribute("aria-pressed", "false");
+    hidden.setAttribute("aria-pressed", "true");
+    await sleep(120);
+    grid.innerHTML = ssrGrid;
+    await sleep(300);
+
+    assert.strictEqual(
+      env.closet().querySelector(".detniv-repost-name"),
+      null,
+      "grille re-rendue malgré un filtre inactif"
+    );
+    assert.strictEqual(
+      env.closet().querySelector('[data-testid="grid-item"] img').getAttribute("src"),
+      "old.jpg"
+    );
+  });
+
+  await test("repost : re-rendu React tardif → restauration automatique", async () => {
+    const env = boot({
+      pages: {
+        [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
+          [makeItem({ id: 23, title: "Pantalon", brand_title: "Levi's", size_title: "W32" })],
+          1, 1, 1
+        ),
+      },
+    });
+    const grid = env.closet().querySelector('[class*="feed-grid"]');
+    const ssrGrid = grid.innerHTML;
+    await env.repost().run();
+    await sleep(250);
+    grid.innerHTML = ssrGrid;
+    await sleep(300);
+
+    const card = env.closet().querySelector('[data-testid="grid-item"]');
+    assert.strictEqual(card.querySelector(".detniv-repost-name").textContent, "Pantalon");
+    assert.strictEqual(card.querySelector(".detniv-repost-meta").textContent, "Levi's · W32");
+  });
+
+  await test("repost : re-rendu React sans aria-pressed (classe activée) → restauration", async () => {
+    const env = boot({
+      pages: {
+        [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
+          [makeItem({ id: 41, title: "Parka", brand_title: "Aigle", size_title: "L" })],
+          1, 1, 1
+        ),
+      },
+    });
+    const grid = env.closet().querySelector('[class*="feed-grid"]');
+    const ssrGrid = grid.innerHTML;
+    await env.repost().run();
+
+    const active = env.doc.querySelector(
+      '[data-testid="closet-seller-filters-active"]'
+    );
+    active.removeAttribute("aria-pressed");
+    active.classList.add("web_ui__Chip__chip", "web_ui__Chip__activated");
+    await sleep(250);
+
+    grid.innerHTML = ssrGrid;
+    await sleep(350);
+
+    const card = env.closet().querySelector('[data-testid="grid-item"]');
+    assert.strictEqual(card.querySelector(".detniv-repost-name").textContent, "Parka");
+    assert.strictEqual(card.querySelector(".detniv-repost-meta").textContent, "Aigle · L");
+  });
+
+  await test("repost : remplacement du conteneur par React → restauration", async () => {
+    const env = boot({
+      pages: {
+        [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
+          [makeItem({ id: 24, title: "Blouson", brand_title: "The North Face", size_title: "L" })],
+          1, 1, 1
+        ),
+      },
+    });
+    const originalCloset = env.closet().cloneNode(true);
+    await env.repost().run();
+    await sleep(250);
+
+    env.closet().parentElement.replaceChild(originalCloset, env.closet());
+    await sleep(300);
+
+    const card = env.closet().querySelector('[data-testid="grid-item"]');
+    assert.strictEqual(card.querySelector(".detniv-repost-name").textContent, "Blouson");
+    assert.strictEqual(
+      card.querySelector(".detniv-repost-meta").textContent,
+      "The North Face · L"
+    );
   });
 
   await test("repost : erreur HTTP API → run rejette, grille inchangée", async () => {
@@ -436,23 +848,13 @@ const WARDROBE = "https://www.vinted.fr/api/v2/wardrobe/251881314/items";
     assert.strictEqual(env.fetchLog.length, 1);
   });
 
-  await test("repost : start() lit v_uid dans document.cookie et lance la grille", async () => {
+  await test("repost : readCookie lit v_uid dans document.cookie", async () => {
     const env = boot({
+      url: "https://www.vinted.fr/",
       cookie: "251881314",
-      pages: {
-        [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
-          [makeItem({ id: 1 }), makeItem({ id: 2 })], 1, 1, 2
-        ),
-      },
     });
-    const result = await env.repost().start();
-    assert.strictEqual(result.navigating, false);
-    assert.strictEqual(result.count, 2);
-    assert.strictEqual(result.url, "https://www.vinted.fr/member/251881314");
-    assert.strictEqual(
-      env.closet().querySelectorAll('[data-testid="grid-item"]').length,
-      2
-    );
+    const uid = await env.repost().readCookie("v_uid");
+    assert.strictEqual(uid, "251881314");
   });
 
   await test("repost : start() sans cookie → erreur v_uid", async () => {
@@ -461,17 +863,13 @@ const WARDROBE = "https://www.vinted.fr/api/v2/wardrobe/251881314/items";
     assert.strictEqual(env.fetchLog.length, 0);
   });
 
-  await test("repost : start() lit v_uid via le background (cookie HttpOnly)", async () => {
+  await test("repost : readCookie lit v_uid via le background (cookie HttpOnly)", async () => {
     const env = boot({
+      url: "https://www.vinted.fr/",
       runtimeCookie: "251881314",
-      pages: {
-        [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
-          [makeItem({ id: 7 })], 1, 1, 1
-        ),
-      },
     });
-    const result = await env.repost().start();
-    assert.strictEqual(result.count, 1);
+    const uid = await env.repost().readCookie("v_uid");
+    assert.strictEqual(uid, "251881314");
     assert.strictEqual(env.messages.length, 1);
     assert.strictEqual(env.messages[0].type, "detniv:get-cookie");
     assert.strictEqual(env.messages[0].name, "v_uid");
@@ -490,8 +888,219 @@ const WARDROBE = "https://www.vinted.fr/api/v2/wardrobe/251881314/items";
     assert.strictEqual(env.fetchLog.length, 0, "fetch avant navigation");
   });
 
+  await test("repost : actualisation en mode auto → rendu sans panneau", async () => {
+    const env = boot({
+      autoWardrobe: "251881314",
+      pages: {
+        [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
+          [
+            makeItem({
+              id: 31,
+              title: "Manteau",
+              brand_title: "COS",
+              size_title: "M",
+            }),
+          ],
+          1, 1, 1
+        ),
+      },
+    });
+    await sleep(400);
+
+    assert.strictEqual(env.fetchLog.length, 1, "API non appelée au chargement");
+    const card = env.closet().querySelector('[data-testid="grid-item"]');
+    assert.strictEqual(card.querySelector(".detniv-repost-name").textContent, "Manteau");
+    assert.strictEqual(card.querySelector(".detniv-repost-meta").textContent, "COS · M");
+    assert.strictEqual(env.activeFilterClicks(), 0, "Actifs déjà sélectionné");
+  });
+
+  await test("repost : actualisation en mode auto → sélectionne Actifs si besoin", async () => {
+    const env = boot({
+      autoWardrobe: "251881314",
+      activePressed: false,
+      pages: {
+        [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
+          [makeItem({ id: 32, title: "Robe", brand_title: "Sézane", size_title: "S" })],
+          1, 1, 1
+        ),
+      },
+    });
+    await sleep(600);
+
+    assert.strictEqual(env.activeFilterClicks(), 1, "filtre Actifs non cliqué");
+    assert.strictEqual(
+      env.doc
+        .querySelector('[data-testid="closet-seller-filters-active"]')
+        .getAttribute("aria-pressed"),
+      "true"
+    );
+    assert.strictEqual(env.fetchLog.length, 1, "API non appelée après sélection");
+    const card = env.closet().querySelector('[data-testid="grid-item"]');
+    assert.strictEqual(card.querySelector(".detniv-repost-name").textContent, "Robe");
+  });
+
+  await test("repost : actualisation hors mode auto → aucun rendu", async () => {
+    const env = boot({
+      autoWardrobe: "999",
+      pages: {
+        [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
+          [makeItem({ id: 33 })], 1, 1, 1
+        ),
+      },
+    });
+    await sleep(300);
+
+    assert.strictEqual(env.fetchLog.length, 0, "fetch malgré l'absence de mode auto");
+    assert.strictEqual(env.activeFilterClicks(), 0, "Actifs cliqué sans mode auto");
+    assert.strictEqual(env.closet().querySelector(".detniv-repost-name"), null);
+  });
+
+  await test("repost : actualisation sur sa garde-robe (v_uid) → rendu auto", async () => {
+    const env = boot({
+      cookie: "251881314",
+      pages: {
+        [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
+          [makeItem({ id: 35, title: "Ceinture", brand_title: "Hermès", size_title: "85" })],
+          1, 1, 1
+        ),
+      },
+    });
+    await sleep(400);
+
+    assert.strictEqual(env.fetchLog.length, 1, "API non appelée au chargement");
+    const card = env.closet().querySelector('[data-testid="grid-item"]');
+    assert.strictEqual(card.querySelector(".detniv-repost-name").textContent, "Ceinture");
+    assert.strictEqual(card.querySelector(".detniv-repost-meta").textContent, "Hermès · 85");
+  });
+
+  await test("repost : actualisation sur sa garde-robe (v_uid HttpOnly) → rendu auto", async () => {
+    const env = boot({
+      runtimeCookie: "251881314",
+      pages: {
+        [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
+          [makeItem({ id: 36, title: "Écharpe", brand_title: "A.P.C.", size_title: "Unique" })],
+          1, 1, 1
+        ),
+      },
+    });
+    await sleep(400);
+
+    assert.strictEqual(env.messages.length, 1, "v_uid non lu via le background");
+    assert.strictEqual(env.fetchLog.length, 1, "API non appelée au chargement");
+    const card = env.closet().querySelector('[data-testid="grid-item"]');
+    assert.strictEqual(card.querySelector(".detniv-repost-name").textContent, "Écharpe");
+  });
+
+  await test("repost : actualisation sur sa garde-robe (filtre Brouillons) → rendu auto", async () => {
+    const env = boot({
+      ownProfile: true,
+      pages: {
+        [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
+          [makeItem({ id: 38, title: "Pull", brand_title: "Lacoste", size_title: "M" })],
+          1, 1, 1
+        ),
+      },
+    });
+    await sleep(400);
+
+    assert.strictEqual(env.fetchLog.length, 1, "API non appelée au chargement");
+    const card = env.closet().querySelector('[data-testid="grid-item"]');
+    assert.strictEqual(card.querySelector(".detniv-repost-name").textContent, "Pull");
+    assert.strictEqual(card.querySelector(".detniv-repost-meta").textContent, "Lacoste · M");
+  });
+
+  await test("repost : clic Actifs depuis Masqués → rendu malgré aria-pressed tardif", async () => {
+    const env = boot({
+      activePressed: false,
+      pages: {
+        [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
+          [makeItem({ id: 39, title: "Chemisier", brand_title: "Mango", size_title: "S" })],
+          1, 1, 1
+        ),
+      },
+    });
+    env.doc
+      .querySelector('[data-testid="closet-seller-filters-hidden"]')
+      .setAttribute("aria-pressed", "true");
+    env.doc
+      .querySelector('[data-testid="closet-seller-filters-active--text"]')
+      .click();
+    await sleep(250);
+
+    assert.strictEqual(env.fetchLog.length, 1, "API non appelée après le clic");
+    const card = env.closet().querySelector('[data-testid="grid-item"]');
+    assert.strictEqual(card.querySelector(".detniv-repost-name").textContent, "Chemisier");
+  });
+
+  await test("repost : retour sur Actifs après Masqués → réapplique les cards", async () => {
+    const env = boot({
+      pages: {
+        [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
+          [makeItem({ id: 40, title: "Blouse", brand_title: "Zara", size_title: "L" })],
+          1, 1, 1
+        ),
+      },
+    });
+    const active = env.doc.querySelector(
+      '[data-testid="closet-seller-filters-active"]'
+    );
+    const hidden = env.doc.querySelector(
+      '[data-testid="closet-seller-filters-hidden"]'
+    );
+    const grid = env.closet().querySelector('[class*="feed-grid"]');
+    const ssrGrid = grid.innerHTML;
+    await env.repost().run();
+
+    // Masqués sélectionné : React remplace la grille.
+    active.setAttribute("aria-pressed", "false");
+    hidden.setAttribute("aria-pressed", "true");
+    grid.innerHTML = ssrGrid;
+    await sleep(250);
+
+    env.doc
+      .querySelector('[data-testid="closet-seller-filters-active--text"]')
+      .click();
+    await sleep(250);
+
+    const card = env.closet().querySelector('[data-testid="grid-item"]');
+    assert.strictEqual(card.querySelector(".detniv-repost-name").textContent, "Blouse");
+    assert.strictEqual(card.querySelector(".detniv-repost-meta").textContent, "Zara · L");
+  });
+
+  await test("repost : actualisation sur la garde-robe d'un autre membre → aucun rendu", async () => {
+    const env = boot({
+      url: "https://www.vinted.fr/member/999",
+      cookie: "251881314",
+      pages: {
+        [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
+          [makeItem({ id: 37 })], 1, 1, 1
+        ),
+      },
+    });
+    await sleep(300);
+
+    assert.strictEqual(env.fetchLog.length, 0, "fetch sur la garde-robe d'un autre membre");
+    assert.strictEqual(env.closet().querySelector(".detniv-repost-name"), null);
+  });
+
+  await test("repost : run active le mode auto pour la garde-robe", async () => {
+    const env = boot({
+      pages: {
+        [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
+          [makeItem({ id: 34 })], 1, 1, 1
+        ),
+      },
+    });
+    await env.repost().run();
+    assert.strictEqual(
+      env.win.sessionStorage.getItem("detnivRepostAuto"),
+      "251881314"
+    );
+  });
+
   await test("repost : reprise auto après navigation (marqueur pending)", async () => {
     const env = boot({
+      activePressed: false,
       seedStore: {
         detnivRepostPending: { uid: "251881314", at: Date.now() },
       },
@@ -503,6 +1112,7 @@ const WARDROBE = "https://www.vinted.fr/api/v2/wardrobe/251881314/items";
     });
     await sleep(400);
     assert.ok(!("detnivRepostPending" in env.store), "marqueur pending non consommé");
+    assert.strictEqual(env.activeFilterClicks(), 1, "Actifs non cliqué après navigation");
     assert.strictEqual(
       env.closet().querySelectorAll('[data-testid="grid-item"]').length,
       1,
