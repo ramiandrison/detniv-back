@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Vinted HEIC Importer",
-  "version": "1.6.7",
+  "version": "1.6.15",
   "description": "Importez des photos HEIC/HEIF sur Vinted — conversion automatique en JPEG ou PNG, amélioration instantanée des photos (baguette magique) et panneau Detniv (connexion, création d'annonce, republication).",
   "browser_specific_settings": {
     "gecko": {

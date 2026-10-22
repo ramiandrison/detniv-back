@@ -6,7 +6,7 @@
  * Simule la grille garde-robe Vinted (SSR), mocke fetch (pagination), charge
  * repost.js, puis vérifie : lecture de l'id dans l'URL, boucle de pagination
  * jusqu'à total_pages, remplacement du contenu de la grille, format prix,
- * repli sans card modèle, erreurs.
+ * recherche, tri et sélection locaux, repli sans card modèle, erreurs.
  */
 "use strict";
 
@@ -212,17 +212,33 @@ function boot({
     win.document.body.appendChild(script);
   }
 
-  let activeFilterClicks = 0;
-  const activeButton = win.document.querySelector(
-    '[data-testid="closet-seller-filters-active"]'
-  );
-  if (activeButton) {
-    if (activePressed !== undefined) {
-      activeButton.setAttribute("aria-pressed", activePressed ? "true" : "false");
-    }
-    activeButton.addEventListener("click", () => {
-      activeFilterClicks++;
-      activeButton.setAttribute("aria-pressed", "true");
+  const filterClicks = { active: 0, hidden: 0, draft: 0 };
+  const filterButtons = {
+    active: win.document.querySelector(
+      '[data-testid="closet-seller-filters-active"]'
+    ),
+    hidden: win.document.querySelector(
+      '[data-testid="closet-seller-filters-hidden"]'
+    ),
+    draft: win.document.querySelector(
+      '[data-testid="closet-seller-filters-draft"]'
+    ),
+  };
+  if (filterButtons.active && activePressed !== undefined) {
+    filterButtons.active.setAttribute(
+      "aria-pressed",
+      activePressed ? "true" : "false"
+    );
+  }
+  for (const [condition, button] of Object.entries(filterButtons)) {
+    if (!button) continue;
+    button.addEventListener("click", () => {
+      filterClicks[condition]++;
+      for (const [key, other] of Object.entries(filterButtons)) {
+        if (!other) continue;
+        other.setAttribute("aria-pressed", key === condition ? "true" : "false");
+        other.classList.toggle("web_ui__Chip__activated", key === condition);
+      }
     });
   }
 
@@ -261,7 +277,8 @@ function boot({
     },
     repost: () => win.DetnivRepost,
     closet: () => win.document.getElementById("closet"),
-    activeFilterClicks: () => activeFilterClicks,
+    activeFilterClicks: () => filterClicks.active,
+    filterClicks: () => ({ ...filterClicks }),
   };
 }
 
@@ -279,6 +296,8 @@ async function test(name, fn) {
 }
 
 const WARDROBE = "https://www.vinted.fr/api/v2/wardrobe/251881314/items";
+const FILTERS_SEL = '[data-testid="closet-seller-filters"]';
+const GRID_SEL = '[class*="feed-grid"]';
 
 (async () => {
   await test("repost : id de garde-robe lu dans l'URL", () => {
@@ -399,6 +418,524 @@ const WARDROBE = "https://www.vinted.fr/api/v2/wardrobe/251881314/items";
     assert.strictEqual(result.count, 1);
     const card = env.closet().querySelector('[data-testid="grid-item"]');
     assert.strictEqual(card.querySelector(".detniv-repost-name").textContent, "Veste");
+  });
+
+  await test("repost : recherche locale par titre, casse et accents ignorés", async () => {
+    const env = boot({
+      pages: {
+        [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
+          [
+            makeItem({ id: 101, title: "Robe rouge", brand_title: "Zara", size_title: "M" }),
+            makeItem({ id: 102, title: "Jean bleu", brand_title: "Levi's", size_title: "40" }),
+            makeItem({ id: 103, title: "Écharpe en laine", brand_title: "COS", size_title: "Unique" }),
+          ],
+          1,
+          1,
+          3
+        ),
+      },
+    });
+    await env.repost().run();
+
+    const filters = env.doc.querySelector(FILTERS_SEL);
+    const input = filters.querySelector("#detniv-repost-search input");
+    assert.ok(input, "champ de recherche absent");
+    assert.strictEqual(
+      env.doc.querySelectorAll("#detniv-repost-search").length,
+      1,
+      "champ de recherche dupliqué"
+    );
+
+    const cards = () =>
+      [...env.closet().querySelectorAll('[data-detniv-repost="1"]')];
+    const visibleTitles = () =>
+      cards()
+        .filter((card) => !card.classList.contains("detniv-repost-hidden"))
+        .map((card) => card.querySelector(".detniv-repost-name").textContent);
+
+    input.value = "ROBE";
+    input.dispatchEvent(new env.win.Event("input", { bubbles: true }));
+    assert.deepStrictEqual(visibleTitles(), ["Robe rouge"]);
+
+    input.value = "echarpe";
+    input.dispatchEvent(new env.win.Event("input", { bubbles: true }));
+    assert.deepStrictEqual(visibleTitles(), ["Écharpe en laine"]);
+
+    input.value = "  ";
+    input.dispatchEvent(new env.win.Event("input", { bubbles: true }));
+    assert.strictEqual(visibleTitles().length, 3);
+  });
+
+  await test("repost : recherche conservée après re-rendu React et réinjectée", async () => {
+    const env = boot({
+      pages: {
+        [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
+          [
+            makeItem({ id: 111, title: "Robe rouge" }),
+            makeItem({ id: 112, title: "Jean bleu" }),
+            makeItem({ id: 113, title: "Écharpe en laine" }),
+          ],
+          1,
+          1,
+          3
+        ),
+      },
+    });
+    const ssrCard = env.closet()
+      .querySelector('[data-testid="grid-item"]')
+      .cloneNode(true);
+    await env.repost().run();
+
+    const input = () => env.doc.querySelector("#detniv-repost-search input");
+    input().value = "jean";
+    input().dispatchEvent(new env.win.Event("input", { bubbles: true }));
+
+    // React remplace toute la grille par sa card SSR.
+    const grid = env.closet().querySelector(GRID_SEL);
+    grid.replaceChildren(ssrCard.cloneNode(true));
+    await sleep(250);
+
+    const cards = () => [
+      ...env.closet().querySelectorAll('[data-detniv-repost="1"]'),
+    ];
+    const visibleTitles = () =>
+      cards()
+        .filter((card) => !card.classList.contains("detniv-repost-hidden"))
+        .map((card) => card.querySelector(".detniv-repost-name").textContent);
+
+    assert.strictEqual(cards().length, 3, "grille non restaurée");
+    assert.deepStrictEqual(visibleTitles(), ["Jean bleu"]);
+    assert.strictEqual(input().value, "jean");
+
+    // React remplace la barre de filtres : le champ doit revenir avec la saisie.
+    env.doc.getElementById("detniv-repost-search").remove();
+    await sleep(250);
+    assert.ok(input(), "champ de recherche non réinjecté");
+    assert.strictEqual(input().value, "jean");
+    assert.deepStrictEqual(visibleTitles(), ["Jean bleu"]);
+  });
+
+  await test("repost : tri local par ID et prix, ordre par défaut rétabli", async () => {
+    const env = boot({
+      pages: {
+        [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
+          [
+            makeItem({
+              id: 102,
+              title: "B",
+              price: { amount: "30", currency_code: "EUR" },
+            }),
+            makeItem({
+              id: 101,
+              title: "A",
+              price: { amount: "10", currency_code: "EUR" },
+            }),
+            makeItem({
+              id: 103,
+              title: "C",
+              price: { amount: "20", currency_code: "EUR" },
+            }),
+          ],
+          1,
+          1,
+          3
+        ),
+      },
+    });
+    await env.repost().run();
+
+    const select = () => env.doc.querySelector("#detniv-repost-sort");
+    assert.ok(select(), "select de tri absent");
+    assert.strictEqual(
+      env.doc.querySelectorAll("#detniv-repost-sort").length,
+      1,
+      "select de tri dupliqué"
+    );
+    assert.deepStrictEqual(
+      [...select().options].map((option) => option.value),
+      ["default", "id-desc", "id-asc", "price-asc", "price-desc"]
+    );
+    assert.strictEqual(select().value, "default");
+
+    const names = () =>
+      [...env.closet().querySelectorAll('[data-detniv-repost="1"]')].map(
+        (card) => card.querySelector(".detniv-repost-name").textContent
+      );
+    const choose = async (value) => {
+      select().value = value;
+      select().dispatchEvent(new env.win.Event("change", { bubbles: true }));
+      await sleep(20);
+      return names();
+    };
+
+    assert.deepStrictEqual(names(), ["B", "A", "C"]);
+    assert.deepStrictEqual(await choose("id-desc"), ["C", "B", "A"]);
+    assert.deepStrictEqual(await choose("id-asc"), ["A", "B", "C"]);
+    assert.deepStrictEqual(await choose("price-asc"), ["A", "C", "B"]);
+    assert.deepStrictEqual(await choose("price-desc"), ["B", "C", "A"]);
+    assert.deepStrictEqual(await choose("default"), ["B", "A", "C"]);
+  });
+
+  await test("repost : tri prix place les montants absents en fin de liste", async () => {
+    const env = boot({
+      pages: {
+        [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
+          [
+            makeItem({ id: 401, title: "Sans prix", price: null }),
+            makeItem({
+              id: 402,
+              title: "Dix",
+              price: { amount: "10", currency_code: "EUR" },
+            }),
+            makeItem({
+              id: 403,
+              title: "Vingt",
+              price: { amount: "20", currency_code: "EUR" },
+            }),
+            makeItem({ id: 404, title: "Sans prix 2", price: {} }),
+          ],
+          1,
+          1,
+          4
+        ),
+      },
+    });
+    await env.repost().run();
+
+    const select = () => env.doc.querySelector("#detniv-repost-sort");
+    const names = () =>
+      [...env.closet().querySelectorAll('[data-detniv-repost="1"]')].map(
+        (card) => card.querySelector(".detniv-repost-name").textContent
+      );
+    const choose = async (value) => {
+      select().value = value;
+      select().dispatchEvent(new env.win.Event("change", { bubbles: true }));
+      await sleep(20);
+      return names();
+    };
+
+    assert.deepStrictEqual(await choose("price-asc"), [
+      "Dix",
+      "Vingt",
+      "Sans prix",
+      "Sans prix 2",
+    ]);
+    assert.deepStrictEqual(await choose("price-desc"), [
+      "Vingt",
+      "Dix",
+      "Sans prix",
+      "Sans prix 2",
+    ]);
+  });
+
+  await test("repost : tri local conservé après changement de filtre", async () => {
+    const hiddenUrl = WARDROBE + "?page=1&per_page=20&cond=hidden";
+    const env = boot({
+      pages: {
+        [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
+          [makeItem({ id: 301, title: "Actif" })],
+          1,
+          1,
+          1
+        ),
+        [hiddenUrl]: pageBody(
+          [
+            makeItem({
+              id: 202,
+              title: "Masqué 2",
+              price: { amount: "25", currency_code: "EUR" },
+            }),
+            makeItem({
+              id: 201,
+              title: "Masqué 1",
+              price: { amount: "5", currency_code: "EUR" },
+            }),
+            makeItem({
+              id: 203,
+              title: "Masqué 3",
+              price: { amount: "15", currency_code: "EUR" },
+            }),
+          ],
+          1,
+          1,
+          3
+        ),
+      },
+    });
+    await env.repost().run();
+
+    const select = () => env.doc.querySelector("#detniv-repost-sort");
+    select().value = "price-asc";
+    select().dispatchEvent(new env.win.Event("change", { bubbles: true }));
+    await sleep(20);
+
+    env.doc
+      .querySelector('[data-testid="closet-seller-filters-hidden"]')
+      .click();
+    await sleep(300);
+
+    assert.strictEqual(env.fetchLog.length, 2, "fetch Masqués absent");
+    assert.strictEqual(env.fetchLog[1].url, hiddenUrl);
+    assert.strictEqual(select().value, "price-asc", "tri non conservé");
+    const names = [
+      ...env.closet().querySelectorAll('[data-detniv-repost="1"]'),
+    ].map((card) => card.querySelector(".detniv-repost-name").textContent);
+    assert.deepStrictEqual(names, ["Masqué 1", "Masqué 3", "Masqué 2"]);
+  });
+
+  await test("repost : tri local restauré après re-rendu React et réinjecté", async () => {
+    const env = boot({
+      pages: {
+        [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
+          [
+            makeItem({
+              id: 302,
+              title: "B",
+              price: { amount: "30", currency_code: "EUR" },
+            }),
+            makeItem({
+              id: 301,
+              title: "A",
+              price: { amount: "10", currency_code: "EUR" },
+            }),
+            makeItem({
+              id: 303,
+              title: "C",
+              price: { amount: "20", currency_code: "EUR" },
+            }),
+          ],
+          1,
+          1,
+          3
+        ),
+      },
+    });
+    const ssrCard = env.closet()
+      .querySelector('[data-testid="grid-item"]')
+      .cloneNode(true);
+    await env.repost().run();
+
+    const select = () => env.doc.querySelector("#detniv-repost-sort");
+    select().value = "price-asc";
+    select().dispatchEvent(new env.win.Event("change", { bubbles: true }));
+    await sleep(20);
+
+    const names = () =>
+      [...env.closet().querySelectorAll('[data-detniv-repost="1"]')].map(
+        (card) => card.querySelector(".detniv-repost-name").textContent
+      );
+    assert.deepStrictEqual(names(), ["A", "C", "B"]);
+
+    // React remplace toute la grille par sa card SSR.
+    const grid = env.closet().querySelector(GRID_SEL);
+    grid.replaceChildren(ssrCard.cloneNode(true));
+    await sleep(300);
+
+    assert.strictEqual(
+      env.closet().querySelectorAll('[data-detniv-repost="1"]').length,
+      3,
+      "grille non restaurée"
+    );
+    assert.strictEqual(select().value, "price-asc");
+    assert.deepStrictEqual(names(), ["A", "C", "B"]);
+
+    // React remplace la barre de filtres : le select revient avec la valeur.
+    env.doc.getElementById("detniv-repost-search").remove();
+    await sleep(300);
+    assert.ok(select(), "select de tri non réinjecté");
+    assert.strictEqual(select().value, "price-asc");
+    assert.deepStrictEqual(names(), ["A", "C", "B"]);
+  });
+
+  await test("repost : cases à cocher Actifs, Masqués, Brouillons et compteur", async () => {
+    const activeUrl = WARDROBE + "?page=1&per_page=20&cond=active";
+    const hiddenUrl = WARDROBE + "?page=1&per_page=20&cond=hidden";
+    const draftUrl = WARDROBE + "?page=1&per_page=20&cond=draft";
+    const env = boot({
+      ownProfile: true,
+      pages: {
+        [activeUrl]: pageBody(
+          [
+            makeItem({ id: 501, title: "Actif 1" }),
+            makeItem({ id: 502, title: "Actif 2" }),
+          ],
+          1,
+          1,
+          2
+        ),
+        [hiddenUrl]: pageBody(
+          [makeItem({ id: 503, title: "Masqué" })],
+          1,
+          1,
+          1
+        ),
+        [draftUrl]: pageBody(
+          [makeItem({ id: 504, title: "Brouillon" })],
+          1,
+          1,
+          1
+        ),
+      },
+    });
+    await sleep(300);
+    assert.strictEqual(env.fetchLog.length, 1, "rendu initial absent");
+
+    const cards = () => [
+      ...env.closet().querySelectorAll('[data-detniv-repost="1"]'),
+    ];
+    const boxes = () =>
+      cards().map((card) =>
+        card.querySelector('.detniv-repost-select input[type="checkbox"]')
+      );
+    const countText = () =>
+      env.doc.querySelector("#detniv-repost-selection-count").textContent;
+
+    assert.strictEqual(cards().length, 2);
+    assert.ok(
+      cards().every(
+        (card) =>
+          card.firstElementChild &&
+          card.firstElementChild.classList.contains("detniv-repost-select")
+      ),
+      "case à cocher absente du coin haut gauche"
+    );
+    assert.ok(boxes().every((box) => box && box.type === "checkbox"));
+    assert.strictEqual(countText(), "0 sélectionné");
+
+    boxes()[0].click();
+    assert.strictEqual(countText(), "1 sélectionné");
+    assert.strictEqual(boxes()[0].checked, true);
+    assert.strictEqual(boxes()[1].checked, false);
+    assert.ok(cards()[0].classList.contains("detniv-repost-selected"));
+
+    boxes()[1].click();
+    assert.strictEqual(countText(), "2 sélectionnés");
+    boxes()[0].click();
+    assert.strictEqual(countText(), "1 sélectionné");
+
+    env.doc
+      .querySelector('[data-testid="closet-seller-filters-hidden"]')
+      .click();
+    await sleep(300);
+    assert.strictEqual(env.fetchLog.length, 2, "fetch Masqués absent");
+    assert.strictEqual(env.fetchLog[1].url, hiddenUrl);
+    assert.strictEqual(cards().length, 1);
+    assert.ok(boxes()[0], "case à cocher absente en Masqués");
+    assert.strictEqual(boxes()[0].checked, false);
+    assert.strictEqual(countText(), "1 sélectionné");
+    boxes()[0].click();
+    assert.strictEqual(countText(), "2 sélectionnés");
+
+    env.doc
+      .querySelector('[data-testid="closet-seller-filters-draft"]')
+      .click();
+    await sleep(300);
+    assert.strictEqual(env.fetchLog.length, 3, "fetch Brouillons absent");
+    assert.strictEqual(env.fetchLog[2].url, draftUrl);
+    assert.strictEqual(cards().length, 1);
+    assert.ok(boxes()[0], "case à cocher absente en Brouillons");
+    assert.strictEqual(boxes()[0].checked, false);
+    assert.strictEqual(countText(), "2 sélectionnés");
+    boxes()[0].click();
+    assert.strictEqual(countText(), "3 sélectionnés");
+  });
+
+  await test("repost : sélection restaurée après re-rendu React et réinjection", async () => {
+    const env = boot({
+      pages: {
+        [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
+          [
+            makeItem({ id: 511, title: "Un" }),
+            makeItem({ id: 512, title: "Deux" }),
+          ],
+          1,
+          1,
+          2
+        ),
+      },
+    });
+    const ssrCard = env.closet()
+      .querySelector('[data-testid="grid-item"]')
+      .cloneNode(true);
+    await env.repost().run();
+
+    const cards = () => [
+      ...env.closet().querySelectorAll('[data-detniv-repost="1"]'),
+    ];
+    const boxes = () =>
+      cards().map((card) =>
+        card.querySelector('.detniv-repost-select input[type="checkbox"]')
+      );
+    const countText = () =>
+      env.doc.querySelector("#detniv-repost-selection-count").textContent;
+
+    boxes()[1].click();
+    assert.strictEqual(countText(), "1 sélectionné");
+    assert.strictEqual(boxes()[1].checked, true);
+
+    // React remplace toute la grille par sa card SSR.
+    const grid = env.closet().querySelector(GRID_SEL);
+    grid.replaceChildren(ssrCard.cloneNode(true));
+    await sleep(300);
+
+    assert.strictEqual(cards().length, 2, "grille non restaurée");
+    assert.strictEqual(countText(), "1 sélectionné");
+    assert.strictEqual(boxes()[0].checked, false);
+    assert.strictEqual(boxes()[1].checked, true);
+    assert.ok(cards()[1].classList.contains("detniv-repost-selected"));
+
+    // React remplace la barre de filtres : compteur et cases reviennent.
+    env.doc.getElementById("detniv-repost-search").remove();
+    await sleep(300);
+    assert.ok(
+      env.doc.querySelector("#detniv-repost-selection-count"),
+      "compteur non réinjecté"
+    );
+    assert.strictEqual(countText(), "1 sélectionné");
+    assert.strictEqual(boxes()[1].checked, true);
+  });
+
+  await test("repost : barre de filtres responsive en mobile", async () => {
+    const env = boot({
+      pages: {
+        [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
+          [makeItem({ id: 601, title: "Mobile" })],
+          1,
+          1,
+          1
+        ),
+      },
+    });
+    await env.repost().run();
+
+    const filters = env.doc.querySelector(FILTERS_SEL);
+    assert.ok(
+      filters.closest(".detniv-repost-filter-row"),
+      "ligne de filtres non marquée pour le responsive"
+    );
+
+    const css = env.doc.getElementById("detniv-repost-styles").textContent;
+    assert.ok(css.includes("@media (max-width: 720px)"), "breakpoint mobile absent");
+    assert.ok(
+      css.includes(".detniv-repost-filter-row") &&
+        css.includes(':has([data-testid="closet-seller-filters"])') &&
+        css.includes("flex-wrap: wrap"),
+      "ligne de filtres non repliable"
+    );
+    assert.ok(
+      css.includes('[data-testid="closet-seller-filters"]') &&
+        css.includes("align-items: flex-start") &&
+        css.includes("> .web_ui__Spacer__vertical"),
+      "chips non protégées contre l'étirement"
+    );
+    assert.ok(
+      css.includes("grid-template-columns: minmax(0, 1fr) auto"),
+      "contrôles locaux non empilés"
+    );
+    assert.ok(
+      css.includes("grid-column: 1 / -1"),
+      "recherche non pleine largeur"
+    );
   });
 
   await test("repost : card rendue avec image, lien, titre, prix, vues", async () => {
@@ -604,9 +1141,24 @@ const WARDROBE = "https://www.vinted.fr/api/v2/wardrobe/251881314/items";
     assert.strictEqual(card.querySelectorAll(".detniv-repost-name").length, 1);
     assert.strictEqual(card.querySelectorAll(".detniv-repost-meta").length, 1);
     assert.strictEqual(
+      card.querySelectorAll(".detniv-repost-select").length,
+      1,
+      "case à cocher dupliquée"
+    );
+    assert.strictEqual(
       env.doc.querySelectorAll("#detniv-repost-styles").length,
       1,
       "feuille de styles dupliquée"
+    );
+    assert.strictEqual(
+      env.doc.querySelectorAll("#detniv-repost-search").length,
+      1,
+      "champ de recherche dupliqué"
+    );
+    assert.strictEqual(
+      env.doc.querySelectorAll("#detniv-repost-selection-count").length,
+      1,
+      "compteur de sélection dupliqué"
     );
   });
 
@@ -674,40 +1226,204 @@ const WARDROBE = "https://www.vinted.fr/api/v2/wardrobe/251881314/items";
     );
   });
 
-  await test("repost : clic sur un autre filtre → pas de re-rendu", async () => {
+  await test("repost : clic sur Masqués → fetch cond=hidden et rendu", async () => {
+    const hiddenUrl = WARDROBE + "?page=1&per_page=20&cond=hidden";
     const env = boot({
       pages: {
         [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
           [makeItem({ id: 22, title: "Jupe", brand_title: "H&M", size_title: "S" })],
           1, 1, 1
         ),
+        [hiddenUrl]: pageBody(
+          [makeItem({ id: 23, title: "Manteau masqué", brand_title: "COS", size_title: "M" })],
+          1, 1, 1
+        ),
       },
     });
-    const grid = env.closet().querySelector('[class*="feed-grid"]');
-    const ssrGrid = grid.innerHTML;
     await env.repost().run();
 
     const hidden = env.doc.querySelector(
       '[data-testid="closet-seller-filters-hidden"]'
     );
     hidden.click();
-    // Simule l'état React après le clic : Actifs n'est plus sélectionné.
-    env.doc
-      .querySelector('[data-testid="closet-seller-filters-active"]')
-      .setAttribute("aria-pressed", "false");
-    hidden.setAttribute("aria-pressed", "true");
-    await sleep(120);
-    grid.innerHTML = ssrGrid;
     await sleep(300);
 
+    assert.strictEqual(env.fetchLog.length, 2, "fetch Masqués absent");
+    assert.strictEqual(env.fetchLog[1].url, hiddenUrl);
     assert.strictEqual(
-      env.closet().querySelector(".detniv-repost-name"),
-      null,
-      "grille re-rendue malgré un filtre inactif"
+      env.doc
+        .querySelector('[data-testid="closet-seller-filters-active"]')
+        .getAttribute("aria-pressed"),
+      "false"
+    );
+    assert.strictEqual(hidden.getAttribute("aria-pressed"), "true");
+    const card = env.closet().querySelector('[data-detniv-repost="1"]');
+    assert.strictEqual(
+      card.querySelector(".detniv-repost-name").textContent,
+      "Manteau masqué"
     );
     assert.strictEqual(
-      env.closet().querySelector('[data-testid="grid-item"] img').getAttribute("src"),
-      "old.jpg"
+      card.querySelector(".detniv-repost-meta").textContent,
+      "COS · M"
+    );
+  });
+
+  await test("repost : clic sur Brouillons → fetch cond=draft et rendu", async () => {
+    const draftUrl = WARDROBE + "?page=1&per_page=20&cond=draft";
+    const env = boot({
+      ownProfile: true,
+      pages: {
+        [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
+          [makeItem({ id: 24, title: "Jupe active" })],
+          1, 1, 1
+        ),
+        [draftUrl]: pageBody(
+          [makeItem({ id: 25, title: "Brouillon", brand_title: "Sézane", size_title: "S" })],
+          1, 1, 1
+        ),
+      },
+    });
+    // La garde-robe personnelle est rechargée automatiquement sur Actifs.
+    await sleep(300);
+    assert.strictEqual(env.fetchLog.length, 1, "rendu initial absent");
+
+    env.doc
+      .querySelector('[data-testid="closet-seller-filters-draft"]')
+      .click();
+    await sleep(300);
+
+    assert.strictEqual(env.fetchLog.length, 2, "fetch Brouillons absent");
+    assert.strictEqual(env.fetchLog[1].url, draftUrl);
+    const card = env.closet().querySelector('[data-detniv-repost="1"]');
+    assert.strictEqual(
+      card.querySelector(".detniv-repost-name").textContent,
+      "Brouillon"
+    );
+    assert.strictEqual(
+      card.querySelector(".detniv-repost-meta").textContent,
+      "Sézane · S"
+    );
+  });
+
+  await test("repost : chaque clic sur un filtre relance fetchAllItems", async () => {
+    const activeUrl = WARDROBE + "?page=1&per_page=20&cond=active";
+    const env = boot({
+      pages: {
+        [activeUrl]: pageBody(
+          [makeItem({ id: 26, title: "Pull", brand_title: "Uniqlo", size_title: "M" })],
+          1, 1, 1
+        ),
+      },
+    });
+    await env.repost().run();
+    assert.strictEqual(env.fetchLog.length, 1, "fetch initial absent");
+
+    env.doc
+      .querySelector('[data-testid="closet-seller-filters-active--text"]')
+      .click();
+    await sleep(300);
+
+    assert.strictEqual(env.fetchLog.length, 2, "second clic sans fetch");
+    assert.strictEqual(env.fetchLog[1].url, activeUrl);
+    const card = env.closet().querySelector('[data-detniv-repost="1"]');
+    assert.strictEqual(card.querySelector(".detniv-repost-name").textContent, "Pull");
+    assert.strictEqual(card.querySelector(".detniv-repost-meta").textContent, "Uniqlo · M");
+  });
+
+  await test("repost : clic pendant un fetch → chargé après le run en cours", async () => {
+    const activeUrl = WARDROBE + "?page=1&per_page=20&cond=active";
+    const hiddenUrl = WARDROBE + "?page=1&per_page=20&cond=hidden";
+    const env = boot({
+      pages: {
+        [activeUrl]: () =>
+          new Promise((resolve) =>
+            setTimeout(
+              () =>
+                resolve(
+                  pageBody(
+                    [makeItem({ id: 61, title: "Actif" })],
+                    1,
+                    1,
+                    1
+                  )
+                ),
+              250
+            )
+          ),
+        [hiddenUrl]: pageBody(
+          [makeItem({ id: 62, title: "Masqué", brand_title: "COS", size_title: "M" })],
+          1,
+          1,
+          1
+        ),
+      },
+    });
+    const running = env.repost().run();
+    await sleep(50);
+    env.doc
+      .querySelector('[data-testid="closet-seller-filters-hidden"]')
+      .click();
+    await running;
+    await sleep(500);
+
+    assert.strictEqual(env.fetchLog.length, 2, "clic perdu pendant le fetch");
+    assert.strictEqual(env.fetchLog[1].url, hiddenUrl);
+    const card = env.closet().querySelector('[data-detniv-repost="1"]');
+    assert.strictEqual(
+      card.querySelector(".detniv-repost-name").textContent,
+      "Masqué"
+    );
+    assert.strictEqual(
+      card.querySelector(".detniv-repost-meta").textContent,
+      "COS · M"
+    );
+  });
+
+  await test("repost : grille démontée au clic → fetch puis rendu après retour", async () => {
+    const hiddenUrl = WARDROBE + "?page=1&per_page=20&cond=hidden";
+    const env = boot({
+      pages: {
+        [WARDROBE + "?page=1&per_page=20&cond=active"]: pageBody(
+          [makeItem({ id: 63, title: "Actif" })],
+          1,
+          1,
+          1
+        ),
+        [hiddenUrl]: pageBody(
+          [makeItem({ id: 64, title: "Masqué", brand_title: "COS", size_title: "M" })],
+          1,
+          1,
+          1
+        ),
+      },
+    });
+    const grid = env.closet().querySelector('[class*="feed-grid"]');
+    const gridHtml = grid.outerHTML;
+    await env.repost().run();
+
+    // Vinted vide la liste au clic sur un filtre et démonte la grille.
+    grid.remove();
+    env.doc
+      .querySelector('[data-testid="closet-seller-filters-hidden"]')
+      .click();
+    await sleep(300);
+
+    assert.strictEqual(env.fetchLog.length, 2, "fetch non lancé sans grille");
+    assert.strictEqual(env.fetchLog[1].url, hiddenUrl);
+
+    // Vinted rend ensuite les articles du filtre : notre grille enrichie
+    // doit s'appliquer dès que le conteneur est de nouveau disponible.
+    env.closet().insertAdjacentHTML("beforeend", gridHtml);
+    await sleep(700);
+
+    const card = env.closet().querySelector('[data-detniv-repost="1"]');
+    assert.strictEqual(
+      card.querySelector(".detniv-repost-name").textContent,
+      "Masqué"
+    );
+    assert.strictEqual(
+      card.querySelector(".detniv-repost-meta").textContent,
+      "COS · M"
     );
   });
 

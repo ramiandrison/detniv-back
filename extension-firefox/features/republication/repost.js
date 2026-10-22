@@ -1,15 +1,19 @@
 /**
  * repost.js — content script : republication (garde-robe Vinted).
  *
- * Sur une page profil membre (/member/<id>), recharge TOUS les articles
- * actifs via l'API Vinted (GET /api/v2/wardrobe/<id>/items?page=N&per_page=20
- * &cond=active, en boucle jusqu'à pagination.total_pages) puis remplace le
- * contenu de la grille (div.u-ui-margin-horizontal-regular@portables) par les
- * articles renvoyés par l'API. Avant tout chargement, le filtre « Actifs » est
- * sélectionné s'il ne l'est pas déjà. Chaque card affiche le nom, la marque et
- * la taille de l'article (`title`, `brand_title`, `size_title`) en plus du prix
- * et des vues. Tant que le filtre « Actifs » est sélectionné, un clic sur
- * celui-ci ou un re-rendu React de la grille ré-applique nos cards.
+ * Sur une page profil membre (/member/<id>), recharge les articles du filtre
+ * sélectionné via l'API Vinted : « Actifs » → cond=active, « Masqués » →
+ * cond=hidden, « Brouillons » → cond=draft (GET
+ * /api/v2/wardrobe/<id>/items?page=N&per_page=20&cond=…, en boucle jusqu'à
+ * pagination.total_pages) puis remplace le contenu de la grille
+ * (div.u-ui-margin-horizontal-regular@portables) par les articles renvoyés.
+ * Avant tout chargement, le filtre « Actifs » est sélectionné s'il ne l'est
+ * pas déjà. Chaque card affiche le nom, la marque et la taille de l'article
+ * (`title`, `brand_title`, `size_title`) en plus du prix et des vues. Un champ
+ * et un select ajoutés à la barre de filtres filtrent localement les cards sur
+ * `item.title` et les trient par ID ou prix. Chaque card possède une case à
+ * cocher ; le nombre total d'articles sélectionnés est affiché dans la barre
+ * de filtres. Un re-rendu React de la grille ré-applique nos cards.
  *
  * Déclenché depuis le panneau Detniv (menu « Republication ») :
  *   DetnivRepost.run() → { count, pages }
@@ -23,13 +27,30 @@
   const CONTAINER_SEL = 'div[class*="u-ui-margin-horizontal-regular"]';
   const GRID_SEL = '[class*="feed-grid"]';
   const ITEM_SEL = '[data-testid="grid-item"]';
+  const FILTERS_SEL = '[data-testid="closet-seller-filters"]';
   const ACTIVE_FILTER_SEL =
     '[data-testid="closet-seller-filters-active"], ' +
     '[data-testid="closet-seller-filters-active--text"]';
+  const HIDDEN_FILTER_SEL =
+    '[data-testid="closet-seller-filters-hidden"], ' +
+    '[data-testid="closet-seller-filters-hidden--text"]';
   const DRAFT_FILTER_SEL =
     '[data-testid="closet-seller-filters-draft"], ' +
     '[data-testid="closet-seller-filters-draft--text"]';
   const STYLE_ID = "detniv-repost-styles";
+  const SEARCH_ID = "detniv-repost-search";
+  const SORT_ID = "detniv-repost-sort";
+  const SELECT_CLASS = "detniv-repost-select";
+  const SELECTED_CLASS = "detniv-repost-selected";
+  const SELECTION_COUNT_ID = "detniv-repost-selection-count";
+  const SEARCH_HIDDEN_CLASS = "detniv-repost-hidden";
+  const SORT_OPTIONS = [
+    { value: "default", label: "Ordre par défaut" },
+    { value: "id-desc", label: "Plus récents" },
+    { value: "id-asc", label: "Plus anciens" },
+    { value: "price-asc", label: "Prix croissant" },
+    { value: "price-desc", label: "Prix décroissant" },
+  ];
   const PER_PAGE = 20;
   const PAGE_DELAY_MS = 120;
   const RECONCILE_DELAY_MS = 200;
@@ -45,9 +66,13 @@
   let reconcileTimer = null;
   let reconcileObserver = null;
   let suppressFilterClick = false;
-  let filterRetryTimer = null;
-  let filterRetryCount = 0;
+  let pendingFilter = null;
+  let filterRunSeq = 0;
+  let activeCondition = null;
   let csrf = null;
+  let searchQuery = "";
+  let sortMode = "default";
+  const selectedKeys = new Set();
 
   function sleep(ms) {
     return new Promise((r) => setTimeout(r, ms));
@@ -169,6 +194,21 @@
     return node;
   }
 
+  /**
+   * Attente de la grille après un clic de filtre. On s'arrête dès qu'un autre
+   * filtre est cliqué, pour ne pas bloquer le run suivant.
+   */
+  async function waitForFilterContainer(condition, runSeq, timeoutMs = 8000) {
+    const deadline = Date.now() + timeoutMs;
+    let node = findContainer();
+    while (!node && Date.now() < deadline) {
+      if (runSeq !== filterRunSeq || !conditionIsCurrent(condition)) return null;
+      await sleep(200);
+      node = findContainer();
+    }
+    return node;
+  }
+
   function findContainer() {
     for (const node of document.querySelectorAll(CONTAINER_SEL)) {
       if (node.querySelector(GRID_SEL) || node.querySelector(ITEM_SEL)) return node;
@@ -178,13 +218,14 @@
 
   /* ──────────────── API Vinted (paginée) ──────────────── */
 
-  async function fetchPage(wardrobeId, page) {
+  async function fetchPage(wardrobeId, page, condition = "active") {
     const url =
       `${location.origin}/api/v2/wardrobe/${wardrobeId}/items` +
-      `?page=${page}&per_page=${PER_PAGE}&cond=active`;
+      `?page=${page}&per_page=${PER_PAGE}&cond=${encodeURIComponent(condition)}`;
     const headers = { Accept: "application/json" };
     const token = csrfToken();
     if (token) headers["X-CSRF-Token"] = token;
+    console.info("[Detniv] API :", url);
     const res = await fetch(url, {
       headers,
       credentials: "include",
@@ -193,12 +234,12 @@
     return res.json();
   }
 
-  async function fetchAllItems(wardrobeId) {
+  async function fetchAllItems(wardrobeId, condition = "active") {
     const items = [];
     let page = 1;
     let totalPages = 1;
     do {
-      const data = await fetchPage(wardrobeId, page);
+      const data = await fetchPage(wardrobeId, page, condition);
       if (Array.isArray(data.items)) items.push(...data.items);
       totalPages = Number((data.pagination || {}).total_pages) || 1;
       page += 1;
@@ -226,10 +267,24 @@
     return /^https?:/.test(path) ? path : location.origin + path;
   }
 
+  /** Clé stable de sélection : l'ID Vinted, sinon l'URL de l'annonce. */
+  function itemKey(item) {
+    const id = item && item.id;
+    if (id != null && id !== "") return "id:" + String(id);
+    return "url:" + itemUrl(item);
+  }
+
+  /** Montant numérique d'un prix API (`price.amount`), ou null si absent. */
+  function priceAmount(price) {
+    if (!price || price.amount == null || price.amount === "") return null;
+    const amount = Number(String(price.amount).replace(",", "."));
+    return Number.isFinite(amount) ? amount : null;
+  }
+
   function formatPrice(price) {
     if (!price || price.amount == null) return "";
-    const amount = Number(price.amount);
-    if (Number.isNaN(amount)) return String(price.amount);
+    const amount = priceAmount(price);
+    if (amount == null) return String(price.amount);
     const code = price.currency_code || "";
     const symbol = code === "EUR" ? "\u00a0€" : code ? "\u00a0" + code : "";
     return amount.toFixed(2).replace(".", ",") + symbol;
@@ -261,6 +316,38 @@
     return [brand, size].filter(Boolean).join(" · ");
   }
 
+  function itemIdValue(item) {
+    const id = Number(item && item.id);
+    return Number.isFinite(id) ? id : null;
+  }
+
+  function itemPriceAmount(item) {
+    return priceAmount(item && item.price);
+  }
+
+  /** Trie une copie des articles selon le select local (jamais l'ordre API). */
+  function sortItems(items) {
+    if (sortMode === "default") return items.slice();
+    const sorted = items.slice();
+    sorted.sort((a, b) => {
+      if (sortMode === "id-desc" || sortMode === "id-asc") {
+        const aId = itemIdValue(a);
+        const bId = itemIdValue(b);
+        if (aId == null && bId == null) return 0;
+        if (aId == null) return 1;
+        if (bId == null) return -1;
+        return sortMode === "id-desc" ? bId - aId : aId - bId;
+      }
+      const aPrice = itemPriceAmount(a);
+      const bPrice = itemPriceAmount(b);
+      if (aPrice == null && bPrice == null) return 0;
+      if (aPrice == null) return 1;
+      if (bPrice == null) return -1;
+      return sortMode === "price-asc" ? aPrice - bPrice : bPrice - aPrice;
+    });
+    return sorted;
+  }
+
   function identityNode(tag, className, text) {
     const node = document.createElement(tag);
     node.className = className;
@@ -280,6 +367,143 @@
   function appendIdentity(container, item) {
     const nodes = identityNodes(item);
     if (nodes.length) container.prepend(...nodes);
+  }
+
+  /** Normalise une saisie ou un titre : minuscules, sans accents, sans espaces autour. */
+  function normalizeSearch(value) {
+    return String(value || "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .trim();
+  }
+
+  function selectionCountText(count) {
+    return count + " sélectionné" + (count > 1 ? "s" : "");
+  }
+
+  /** Met à jour le compteur, y compris après sa réinjection par React. */
+  function syncSelectionCount(node) {
+    const target = node || document.getElementById(SELECTION_COUNT_ID);
+    if (!target) return;
+    const count = selectedKeys.size;
+    target.textContent = selectionCountText(count);
+    target.classList.toggle(
+      "detniv-repost-selection-count--active",
+      count > 0
+    );
+  }
+
+  function createSelectionCount() {
+    const node = document.createElement("span");
+    node.id = SELECTION_COUNT_ID;
+    node.className = "detniv-repost-selection-count";
+    node.setAttribute("role", "status");
+    node.setAttribute("aria-live", "polite");
+    node.setAttribute("aria-atomic", "true");
+    node.title = "Nombre total d'articles sélectionnés";
+    syncSelectionCount(node);
+    return node;
+  }
+
+  /**
+   * Champ de recherche, select de tri et compteur de sélection ajoutés à la
+   * barre de filtres Vinted. Ils restent dans le DOM géré par React :
+   * l'observateur les réinjecte si un rendu les supprime.
+   */
+  function ensureLocalControls() {
+    const filters = document.querySelector(FILTERS_SEL);
+    if (!filters) return null;
+
+    // Sur mobile, la ligne d'en-tête doit pouvoir passer sous le compteur
+    // d'articles pour que les contrôles prennent toute la largeur.
+    const scrollContent = filters.closest(
+      '[class*="horizontal-scroll__content"]'
+    );
+    const scrollWrapper = scrollContent && scrollContent.parentElement;
+    const filterRow =
+      (scrollWrapper && scrollWrapper.parentElement) || filters.parentElement;
+    if (filterRow) filterRow.classList.add("detniv-repost-filter-row");
+
+    const wrapper = filters.querySelector("." + SEARCH_ID);
+    if (wrapper) {
+      const existingInput = wrapper.querySelector("input");
+      const existingSelect = wrapper.querySelector("select");
+      if (existingInput && existingSelect) {
+        if (existingInput.value !== searchQuery) {
+          existingInput.value = searchQuery;
+        }
+        if (existingSelect.value !== sortMode) existingSelect.value = sortMode;
+        let countNode = wrapper.querySelector("#" + SELECTION_COUNT_ID);
+        if (!countNode) {
+          countNode = createSelectionCount();
+          wrapper.appendChild(countNode);
+        } else {
+          syncSelectionCount(countNode);
+        }
+        return existingInput;
+      }
+      wrapper.remove();
+    }
+    for (const old of document.querySelectorAll("." + SEARCH_ID)) old.remove();
+
+    const host = document.createElement("div");
+    host.id = SEARCH_ID;
+    host.className = SEARCH_ID;
+    const input = document.createElement("input");
+    input.type = "search";
+    input.placeholder = "Rechercher un article…";
+    input.setAttribute("aria-label", "Rechercher un article");
+    input.autocomplete = "off";
+    input.value = searchQuery;
+    input.addEventListener("input", () => {
+      searchQuery = input.value;
+      applySearchFilter();
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") event.preventDefault();
+    });
+
+    const select = document.createElement("select");
+    select.id = SORT_ID;
+    select.className = "detniv-repost-sort";
+    select.setAttribute("aria-label", "Trier les articles");
+    select.title = "Trier les articles";
+    for (const { value, label } of SORT_OPTIONS) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      select.appendChild(option);
+    }
+    select.value = sortMode;
+    select.addEventListener("change", () => {
+      sortMode = select.value;
+      rerenderItems();
+    });
+
+    host.appendChild(input);
+    host.appendChild(select);
+    host.appendChild(createSelectionCount());
+    filters.appendChild(host);
+    return input;
+  }
+
+  /** Masque localement les cards dont `item.title` ne contient pas la saisie. */
+  function applySearchFilter(grid) {
+    let target = grid;
+    if (!target) {
+      const container = findContainer();
+      target = container && container.querySelector(GRID_SEL);
+    }
+    if (!target) return;
+    const query = normalizeSearch(searchQuery);
+    for (const card of target.querySelectorAll('[data-detniv-repost="1"]')) {
+      const title = card.getAttribute("data-detniv-title") || "";
+      const hide = Boolean(query) && !title.includes(query);
+      if (card.classList.contains(SEARCH_HIDDEN_CLASS) !== hide) {
+        card.classList.toggle(SEARCH_HIDDEN_CLASS, hide);
+      }
+    }
   }
 
   function ensureStyles() {
@@ -306,6 +530,175 @@
         text-overflow: ellipsis;
         white-space: nowrap;
       }
+      .detniv-repost-hidden {
+        display: none !important;
+      }
+      .detniv-repost-card {
+        position: relative;
+      }
+      .detniv-repost-card.detniv-repost-selected {
+        outline: 2px solid #007782;
+        outline-offset: -2px;
+      }
+      .detniv-repost-select {
+        position: absolute;
+        top: 8px;
+        left: 8px;
+        z-index: 10;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 30px;
+        height: 30px;
+        box-sizing: border-box;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.94);
+        box-shadow: 0 1px 4px rgba(0, 0, 0, 0.22);
+        cursor: pointer;
+        user-select: none;
+      }
+      .detniv-repost-select:focus-within {
+        box-shadow: 0 0 0 2px #007782, 0 1px 4px rgba(0, 0, 0, 0.22);
+      }
+      .detniv-repost-select input {
+        width: 18px;
+        height: 18px;
+        margin: 0;
+        accent-color: #007782;
+        cursor: pointer;
+      }
+      .detniv-repost-search {
+        display: flex;
+        align-items: center;
+        flex: 0 0 auto;
+        margin-left: 8px;
+      }
+      .detniv-repost-search input {
+        width: 210px;
+        height: 32px;
+        box-sizing: border-box;
+        padding: 0 12px;
+        border: 1px solid #c7c7c7;
+        border-radius: 999px;
+        background: #fff;
+        color: #1a1a1a;
+        font: inherit;
+        font-size: 14px;
+        outline: none;
+      }
+      .detniv-repost-search input:focus {
+        border-color: #007782;
+        box-shadow: 0 0 0 1px #007782;
+      }
+      .detniv-repost-search input::placeholder {
+        color: #737373;
+      }
+      .detniv-repost-search select {
+        width: 168px;
+        height: 32px;
+        margin-left: 8px;
+        box-sizing: border-box;
+        padding: 0 30px 0 12px;
+        border: 1px solid #c7c7c7;
+        border-radius: 999px;
+        background: #fff;
+        color: #1a1a1a;
+        font: inherit;
+        font-size: 14px;
+        outline: none;
+        cursor: pointer;
+      }
+      .detniv-repost-search select:focus {
+        border-color: #007782;
+        box-shadow: 0 0 0 1px #007782;
+      }
+      .detniv-repost-selection-count {
+        display: inline-flex;
+        align-items: center;
+        height: 32px;
+        margin-left: 8px;
+        padding: 0 12px;
+        box-sizing: border-box;
+        border: 1px solid #c7c7c7;
+        border-radius: 999px;
+        background: #fff;
+        color: #737373;
+        font-size: 14px;
+        white-space: nowrap;
+      }
+      .detniv-repost-selection-count--active {
+        border-color: #007782;
+        background: #e6f4f5;
+        color: #005f68;
+        font-weight: 600;
+      }
+      @media (max-width: 720px) {
+        .detniv-repost-filter-row {
+          flex-wrap: wrap;
+          row-gap: 8px;
+        }
+        .detniv-repost-filter-row > .u-position-relative {
+          flex: 1 0 100%;
+          width: 100%;
+          max-width: 100%;
+          min-width: 0;
+        }
+        /* Repli CSS si la classe JS disparaît lors d'un rendu React. */
+        .web_ui__Container__container
+          > .u-flexbox:has([data-testid="closet-seller-filters"]) {
+          flex-wrap: wrap;
+          row-gap: 8px;
+        }
+        .web_ui__Container__container
+          > .u-flexbox:has([data-testid="closet-seller-filters"])
+          > .u-position-relative {
+          flex: 1 0 100%;
+          width: 100%;
+          max-width: 100%;
+          min-width: 0;
+        }
+        [data-testid="closet-seller-filters"] {
+          flex-wrap: wrap;
+          align-items: flex-start;
+          align-content: flex-start;
+          align-self: flex-start;
+          width: 100%;
+          min-width: 0;
+          gap: 8px;
+        }
+        [data-testid="closet-seller-filters"] > .web_ui__Spacer__vertical {
+          display: none;
+        }
+        [data-testid="closet-seller-filters"] > button {
+          align-self: flex-start;
+        }
+        .detniv-repost-search {
+          order: 1;
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto;
+          gap: 6px;
+          flex: 1 1 100%;
+          width: 100%;
+          box-sizing: border-box;
+          margin-left: 0;
+        }
+        .detniv-repost-search input {
+          grid-column: 1 / -1;
+          width: 100%;
+          min-width: 0;
+        }
+        .detniv-repost-search select {
+          width: 100%;
+          min-width: 0;
+          margin-left: 0;
+        }
+        .detniv-repost-selection-count {
+          justify-content: center;
+          margin-left: 0;
+          padding: 0 10px;
+          font-size: 13px;
+        }
+      }
     `;
     (document.head || document.documentElement).appendChild(style);
   }
@@ -325,6 +718,7 @@
   /** Recopie la card SSR existante (mêmes classes CSS Vinted) pour un article. */
   function fillFromTemplate(template, item) {
     template.setAttribute("data-detniv-repost", "1");
+    template.setAttribute("data-detniv-title", normalizeSearch(item.title));
     const nodes = [template, ...template.querySelectorAll("[data-testid]")];
     for (const node of nodes) {
       const tid = node.getAttribute("data-testid");
@@ -388,6 +782,7 @@
     const card = document.createElement("div");
     card.setAttribute("data-testid", "grid-item");
     card.setAttribute("data-detniv-repost", "1");
+    card.setAttribute("data-detniv-title", normalizeSearch(item.title));
     const box = document.createElement("div");
     box.className = "u-flex-grow u-fill-width";
     box.setAttribute("data-testid", "product-item-id-" + item.id);
@@ -409,21 +804,74 @@
     return card;
   }
 
+  function setItemData(card, item) {
+    card.setAttribute("data-detniv-id", item.id == null ? "" : String(item.id));
+    card.setAttribute("data-detniv-key", itemKey(item));
+    const amount = itemPriceAmount(item);
+    if (amount == null) card.removeAttribute("data-detniv-price");
+    else card.setAttribute("data-detniv-price", String(amount));
+  }
+
+  /**
+   * Case à cocher en haut à gauche de la card. La sélection est mémorisée par
+   * clé d'article et reste valable en changeant de filtre ou après un rendu.
+   */
+  function addSelectionCheckbox(card, item) {
+    for (const old of card.querySelectorAll("." + SELECT_CLASS)) old.remove();
+
+    const key = itemKey(item);
+    const name = itemName(item) || "cet article";
+    const checked = selectedKeys.has(key);
+    const label = document.createElement("label");
+    label.className = SELECT_CLASS;
+    label.addEventListener("click", (event) => event.stopPropagation());
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = checked;
+    const applyLabel = () => {
+      const action = checkbox.checked ? "Désélectionner " : "Sélectionner ";
+      checkbox.setAttribute("aria-label", action + name);
+      label.title = action + name;
+    };
+    applyLabel();
+
+    checkbox.addEventListener("click", (event) => event.stopPropagation());
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) selectedKeys.add(key);
+      else selectedKeys.delete(key);
+      card.classList.toggle(SELECTED_CLASS, checkbox.checked);
+      applyLabel();
+      syncSelectionCount();
+    });
+
+    label.appendChild(checkbox);
+    card.classList.add("detniv-repost-card");
+    card.classList.toggle(SELECTED_CLASS, checked);
+    card.prepend(label);
+  }
+
   function renderItems(container, items) {
     ensureStyles();
     const grid = gridNode(container);
     const templateNode = grid.querySelector(ITEM_SEL);
     const template = templateNode ? templateNode.cloneNode(true) : null;
+    const ordered = sortItems(items);
     grid.replaceChildren(
-      ...items.map((item) =>
-        template
+      ...ordered.map((item) => {
+        const card = template
           ? fillFromTemplate(template.cloneNode(true), item)
-          : buildFallbackItem(item)
-      )
+          : buildFallbackItem(item);
+        setItemData(card, item);
+        addSelectionCheckbox(card, item);
+        return card;
+      })
     );
+    ensureLocalControls();
+    applySearchFilter(grid);
   }
 
-  /* ──────────────── Re-rendu après le filtre « Actifs » ──────────────── */
+  /* ──────────────── Filtres et re-rendu ──────────────── */
 
   function filterButton(node) {
     if (!node || typeof node.closest !== "function") return null;
@@ -443,12 +891,46 @@
     );
   }
 
-  function findActiveFilterButton() {
-    for (const node of document.querySelectorAll(ACTIVE_FILTER_SEL)) {
+  function filterSelector(condition) {
+    if (condition === "hidden") return HIDDEN_FILTER_SEL;
+    if (condition === "draft") return DRAFT_FILTER_SEL;
+    return ACTIVE_FILTER_SEL;
+  }
+
+  function findFilterButton(condition) {
+    for (const node of document.querySelectorAll(filterSelector(condition))) {
       const button = filterButton(node);
       if (button) return button;
     }
     return null;
+  }
+
+  function filterIsSelected(condition) {
+    return filterIsActive(findFilterButton(condition));
+  }
+
+  /**
+   * Condition actuellement voulue par l'utilisateur. L'intention du dernier
+   * clic est prioritaire : elle ne dépend pas de la mise à jour aria/classes
+   * de React, qui peut arriver après notre fetch.
+   */
+  function conditionIsCurrent(condition) {
+    if (activeCondition) return activeCondition === condition;
+    return filterIsSelected(condition);
+  }
+
+  /** Une barre de filtres est présente : le rendu doit correspondre au filtre. */
+  function filtersPresent() {
+    return Boolean(
+      document.querySelector(FILTERS_SEL) ||
+        document.querySelector(ACTIVE_FILTER_SEL) ||
+        document.querySelector(HIDDEN_FILTER_SEL) ||
+        document.querySelector(DRAFT_FILTER_SEL)
+    );
+  }
+
+  function findActiveFilterButton() {
+    return findFilterButton("active");
   }
 
   /**
@@ -463,7 +945,7 @@
   async function selectActiveFilter(timeoutMs = 2000) {
     // Sans barre de filtres (page vide ou variante DOM), ne pas bloquer le run.
     if (
-      !document.querySelector('[data-testid="closet-seller-filters"]') &&
+      !document.querySelector(FILTERS_SEL) &&
       !document.querySelector(ACTIVE_FILTER_SEL)
     ) {
       return false;
@@ -489,16 +971,10 @@
     // React applique l'état sélectionné après le cycle de clic.
     const settleDeadline = Date.now() + 600;
     do {
-      if (activeFilterPressed()) return true;
+      if (filterIsSelected("active")) return true;
       await sleep(50);
     } while (Date.now() < settleDeadline);
-    return activeFilterPressed();
-  }
-
-  function activeFilterPressed() {
-    return [...document.querySelectorAll(ACTIVE_FILTER_SEL)].some((node) => {
-      return filterIsActive(filterButton(node));
-    });
+    return filterIsSelected("active");
   }
 
   function cardsAreRendered(container) {
@@ -508,8 +984,35 @@
 
     const items = lastRender.items;
     const cards = grid.querySelectorAll(ITEM_SEL);
-    const ours = grid.querySelectorAll('[data-detniv-repost="1"]');
+    const ours = [...grid.querySelectorAll('[data-detniv-repost="1"]')];
     if (cards.length !== items.length || ours.length !== items.length) {
+      return false;
+    }
+
+    const orderedItems = sortItems(items);
+    const expectedIds = orderedItems.map((item) =>
+      item.id == null ? "" : String(item.id)
+    );
+    if (
+      ours.some(
+        (card, index) =>
+          card.getAttribute("data-detniv-id") !== expectedIds[index]
+      )
+    ) {
+      return false;
+    }
+
+    const expectedSelection = orderedItems.map((item) =>
+      selectedKeys.has(itemKey(item))
+    );
+    if (
+      ours.some((card, index) => {
+        const checkbox = card.querySelector(
+          "." + SELECT_CLASS + ' input[type="checkbox"]'
+        );
+        return !checkbox || checkbox.checked !== expectedSelection[index];
+      })
+    ) {
       return false;
     }
 
@@ -524,7 +1027,7 @@
   function rerenderItems() {
     if (!lastRender) return false;
     if (wardrobeIdFromLocation() !== lastRender.wardrobeId) return false;
-    if (!activeFilterPressed()) return false;
+    if (!conditionIsCurrent(lastRender.condition || "active")) return false;
     const container = findContainer();
     if (!container) return false;
     renderItems(container, lastRender.items);
@@ -535,10 +1038,14 @@
   function reconcileItems() {
     if (!lastRender) return false;
     if (wardrobeIdFromLocation() !== lastRender.wardrobeId) return false;
-    if (!activeFilterPressed()) return false;
+    if (!conditionIsCurrent(lastRender.condition || "active")) return false;
     const container = findContainer();
     if (!container) return false;
-    if (cardsAreRendered(container)) return false;
+    ensureLocalControls();
+    if (cardsAreRendered(container)) {
+      applySearchFilter();
+      return false;
+    }
     renderItems(container, lastRender.items);
     return true;
   }
@@ -557,45 +1064,72 @@
     reconcileObserver.observe(root, { childList: true, subtree: true });
   }
 
-  function onActiveFilterClick(event) {
+  function conditionFromTarget(target) {
+    if (!target || typeof target.closest !== "function") return null;
+    if (target.closest(ACTIVE_FILTER_SEL)) return "active";
+    if (target.closest(HIDDEN_FILTER_SEL)) return "hidden";
+    if (target.closest(DRAFT_FILTER_SEL)) return "draft";
+    return null;
+  }
+
+  /** Mémorise le dernier filtre cliqué pendant un chargement en cours. */
+  function queuePendingFilter(wardrobeId, condition, runSeq) {
+    pendingFilter = { wardrobeId, condition, runSeq };
+  }
+
+  /** Exécute le filtre cliqué pendant un run, dès que la garde-robe se libère. */
+  function drainPendingFilter() {
+    if (!pendingFilter || busy) return;
+    const { wardrobeId, condition, runSeq } = pendingFilter;
+    pendingFilter = null;
+    if (wardrobeIdFromLocation() !== wardrobeId) return;
+    if (runSeq !== filterRunSeq) return;
+    activeCondition = condition;
+    run(wardrobeId, { condition, selectFilter: false, runSeq }).catch((err) => {
+      console.error("[Detniv] republication :", err);
+    });
+  }
+
+  function onFilterClick(event) {
     if (suppressFilterClick) return;
-    const target = event.target;
-    if (!target || typeof target.closest !== "function") return;
-    if (!target.closest(ACTIVE_FILTER_SEL)) return;
+    const condition = conditionFromTarget(event.target);
+    if (!condition) return;
 
     const wardrobeId = wardrobeIdFromLocation();
-    if (!wardrobeId || busy) return;
+    if (!wardrobeId) {
+      console.warn(
+        "[Detniv] filtre : garde-robe non reconnue dans l'URL",
+        location.pathname
+      );
+      return;
+    }
 
-    // React met à jour aria-pressed après l'événement de clic. On attend donc
-    // la fin de son cycle avant de vérifier que « Actifs » est réellement le
-    // filtre sélectionné, puis on réapplique nos cards (ou on recharge).
-    if (filterRetryTimer) clearTimeout(filterRetryTimer);
-    filterRetryCount = 0;
+    // L'intention est enregistrée dès le clic : un fetch déjà en cours pour un
+    // autre filtre ne pourra plus écraser la vue. On ne dépend pas de l'état
+    // aria/classes de React pour lancer la requête.
+    const runSeq = ++filterRunSeq;
+    activeCondition = condition;
+    console.info("[Detniv] filtre cliqué :", condition);
 
-    const attempt = () => {
-      filterRetryTimer = null;
-      if (busy || wardrobeIdFromLocation() !== wardrobeId) return;
-      if (activeFilterPressed()) {
-        if (lastRender && lastRender.wardrobeId === wardrobeId) {
-          rerenderItems();
-        } else {
-          run(wardrobeId).catch((err) => {
-            console.error("[Detniv] republication :", err);
-          });
-        }
+    setTimeout(() => {
+      if (wardrobeIdFromLocation() !== wardrobeId || runSeq !== filterRunSeq) {
         return;
       }
-      if (filterRetryCount < 5) {
-        filterRetryCount += 1;
-        filterRetryTimer = setTimeout(attempt, 150);
+      activeCondition = condition;
+      if (busy) {
+        console.info("[Detniv] filtre en attente :", condition);
+        queuePendingFilter(wardrobeId, condition, runSeq);
+        return;
       }
-    };
-    filterRetryTimer = setTimeout(attempt, FILTER_SETTLE_MS);
+      run(wardrobeId, { condition, selectFilter: false, runSeq }).catch((err) => {
+        console.error("[Detniv] republication :", err);
+      });
+    }, FILTER_SETTLE_MS);
   }
 
   /* ──────────────── Point d'entrée ──────────────── */
 
-  async function run(wardrobeId) {
+  async function run(wardrobeId, options = {}) {
     if (busy) throw new Error("Republication déjà en cours.");
     const id = wardrobeId || wardrobeIdFromLocation();
     if (!id) {
@@ -603,23 +1137,70 @@
         "Ouvrez une garde-robe (page profil membre) pour lancer la republication."
       );
     }
+    const condition = options.condition || "active";
+    const runSeq = options.runSeq;
+    const filterRun = runSeq !== undefined;
+    const selectFilter =
+      options.selectFilter === undefined
+        ? condition === "active"
+        : Boolean(options.selectFilter);
     let container = findContainer();
-    if (!container) throw new Error("Garde-robe introuvable sur cette page.");
+    // Un clic de filtre peut avoir démonté la grille Vinted (les articles sont
+    // vidés avant son fetch). On charge quand même, puis on attend la nouvelle
+    // grille avant de rendre nos cards.
+    if (!container && !filterRun) {
+      throw new Error("Garde-robe introuvable sur cette page.");
+    }
     busy = true;
     try {
-      // Le fetch porte toujours sur les articles actifs : on aligne d'abord
-      // l'onglet Vinted pour que React ne remplace pas nos cards juste après.
-      await selectActiveFilter();
-      const { items, pages } = await fetchAllItems(id);
-      // Le clic sur « Actifs » peut avoir remplacé le conteneur React.
-      container = findContainer() || container;
-      lastRender = { wardrobeId: String(id), items };
+      activeCondition = condition;
+      console.info("[Detniv] chargement :", condition, "garde-robe", id);
+      // Pour « Actifs » déclenché depuis le panneau, on aligne d'abord l'onglet
+      // Vinted. Un clic direct sur Masqués/Brouillons ne doit pas revenir aux
+      // actifs : le fetch suit le filtre déjà sélectionné.
+      if (selectFilter) await selectActiveFilter();
+      const { items, pages } = await fetchAllItems(id, condition);
+      // Un clic plus récent sur un filtre invalide ce chargement.
+      if (runSeq !== undefined && runSeq !== filterRunSeq) {
+        console.info("[Detniv] chargement ignoré (filtre plus récent) :", condition);
+        return { count: 0, pages, skipped: true };
+      }
+      // Si l'utilisateur a changé de filtre pendant le chargement, ne pas
+      // écraser la vue courante avec une autre catégorie.
+      if (filtersPresent() && !conditionIsCurrent(condition)) {
+        console.info("[Detniv] chargement ignoré (filtre courant différent) :", condition);
+        return { count: 0, pages, skipped: true };
+      }
+      if (items.length === 0) {
+        console.info("[Detniv] aucun article :", condition);
+        return { count: 0, pages };
+      }
+      if (filterRun) {
+        container = findContainer();
+        if (!container) {
+          console.info("[Detniv] grille Vinted absente, attente :", condition);
+          container = await waitForFilterContainer(condition, runSeq);
+        }
+        // Un autre filtre a pu être cliqué pendant l'attente de la grille.
+        if (runSeq !== filterRunSeq || !conditionIsCurrent(condition)) {
+          console.info("[Detniv] chargement ignoré après attente :", condition);
+          return { count: 0, pages, skipped: true };
+        }
+      } else {
+        container = findContainer() || container;
+      }
+      if (!container) {
+        console.warn("[Detniv] grille introuvable, rendu annulé :", condition);
+        return { count: 0, pages, skipped: true };
+      }
+      lastRender = { wardrobeId: String(id), condition, items };
       renderItems(container, items);
       rememberAutoWardrobe(id);
       startReconcile();
       return { count: items.length, pages };
     } finally {
       busy = false;
+      drainPendingFilter();
     }
   }
 
@@ -763,7 +1344,14 @@
     itemUrl,
   };
 
-  document.addEventListener("click", onActiveFilterClick, true);
+  const runtimeApi = browserApi() && browserApi().runtime;
+  const extensionVersion =
+    runtimeApi && typeof runtimeApi.getManifest === "function"
+      ? runtimeApi.getManifest().version
+      : "dev";
+  console.info("[Detniv] republication", extensionVersion, "chargée");
+
+  document.addEventListener("click", onFilterClick, true);
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", () => autoStart(), {
