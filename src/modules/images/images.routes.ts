@@ -1,61 +1,8 @@
-import { RequestHandler, Router } from 'express';
-import multer from 'multer';
+import { Router } from 'express';
 import { requireAuth } from '../../middlewares/requireAuth';
-import { sendError } from '../../utils/response';
 import { listHandler, uploadHandler } from './images.controller';
-import {
-  MAX_IMAGES_PER_REQUEST,
-  MAX_IMAGE_SIZE_BYTES,
-} from './images.service';
 
 const router = Router();
-
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: {
-    fileSize: MAX_IMAGE_SIZE_BYTES,
-    files: MAX_IMAGES_PER_REQUEST,
-  },
-});
-
-const uploadFields = upload.fields([
-  { name: 'files', maxCount: MAX_IMAGES_PER_REQUEST },
-  { name: 'file', maxCount: 1 },
-]);
-
-const handleUpload: RequestHandler = (req, res, next) => {
-  uploadFields(req, res, (error: unknown) => {
-    if (error instanceof multer.MulterError) {
-      if (error.code === 'LIMIT_FILE_SIZE') {
-        sendError(
-          res,
-          `Image too large (max ${MAX_IMAGE_SIZE_BYTES / (1024 * 1024)} MB)`,
-          413
-        );
-        return;
-      }
-      if (error.code === 'LIMIT_FILE_COUNT') {
-        sendError(
-          res,
-          `Too many images (max ${MAX_IMAGES_PER_REQUEST})`,
-          400
-        );
-        return;
-      }
-      if (error.code === 'LIMIT_UNEXPECTED_FILE') {
-        sendError(res, 'Unexpected file field', 400);
-        return;
-      }
-      sendError(res, 'Invalid image upload', 400);
-      return;
-    }
-    if (error) {
-      next(error);
-      return;
-    }
-    next();
-  });
-};
 
 router.use(requireAuth);
 
@@ -63,47 +10,50 @@ router.use(requireAuth);
  * @swagger
  * tags:
  *   name: Images
- *   description: Upload et consultation des images stockées sur Backblaze B2
+ *   description: Téléchargement et consultation des images stockées sur Backblaze B2
  */
 
 /**
  * @swagger
  * /images:
  *   post:
- *     summary: Upload one or more images
+ *     summary: Upload one or more Vinted photos (full_size_url)
  *     tags: [Images]
  *     security: [{ bearerAuth: [] }]
  *     requestBody:
  *       required: true
  *       content:
- *         multipart/form-data:
+ *         application/json:
  *           schema:
  *             type: object
+ *             required: [vinted_user_id, article_id, photos]
  *             properties:
- *               files:
+ *               vinted_user_id:
+ *                 type: string
+ *               article_id:
+ *                 type: string
+ *               photos:
  *                 type: array
  *                 maxItems: 20
  *                 items:
- *                   type: string
- *                   format: binary
- *               file:
- *                 type: string
- *                 format: binary
+ *                   type: object
+ *                   required: [photo_id, full_size_url]
+ *                   properties:
+ *                     photo_id:
+ *                       type: string
+ *                     full_size_url:
+ *                       type: string
  *     responses:
  *       201:
- *         description: Images uploaded
+ *         description: Photos downloaded and uploaded
  *       400:
- *         description: Missing file or invalid upload
- *       413:
- *         description: Image too large
- *       415:
- *         description: Unsupported image type
+ *         description: Invalid request body
  *       503:
  *         description: Image storage not configured
  *       502:
- *         description: Backblaze storage unavailable
+ *         description: Backblaze storage or image download unavailable
  */
-router.post('/', handleUpload, uploadHandler);
+router.post('/', uploadHandler);
 
 /**
  * @swagger

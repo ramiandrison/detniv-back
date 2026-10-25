@@ -1,15 +1,20 @@
-import { randomUUID } from 'crypto';
 import { prisma } from '../../config/prisma';
 import { uploadImage } from './b2.service';
-import { detectImageType } from './image-file';
 
-export const MAX_IMAGES_PER_REQUEST = 20;
-export const MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024;
-
-export interface IncomingImage {
-  buffer: Buffer;
-  originalname: string;
+export interface PhotoRef {
+  photoId: string;
+  fullSizeUrl: string;
 }
+
+export interface ImageMeta {
+  vintedUserId: string;
+  articleId: string;
+  photos: PhotoRef[];
+}
+
+export const MAX_PHOTOS_PER_REQUEST = 20;
+export const MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024;
+export const DOWNLOAD_TIMEOUT_MS = 60_000;
 
 const imageSelect = {
   id: true,
@@ -21,82 +26,80 @@ const imageSelect = {
   createdAt: true,
 } as const;
 
-function objectKey(userId: number, extension: string): string {
-  const now = new Date();
-  const year = now.getUTCFullYear();
-  const month = String(now.getUTCMonth() + 1).padStart(2, '0');
-  return `users/${userId}/${year}/${month}/${randomUUID()}.${extension}`;
+/** Chemin B2 : `repost_photos/vintedUserId/articleId/photosId` */
+function objectKey(
+  vintedUserId: string,
+  articleId: string,
+  photoId: string
+): string {
+  return `repost_photos/${vintedUserId}/${articleId}/${photoId}`;
 }
 
-function safeOriginalName(name: string, extension: string): string {
-  const base = String(name || '')
-    .replace(/\\/g, '/')
-    .split('/')
-    .pop() as string;
-  return (base || `image.${extension}`).slice(0, 255);
+function extensionFromContentType(contentType: string): string {
+  const map: Record<string, string> = {
+    'image/jpeg': 'jpg',
+    'image/png': 'png',
+    'image/webp': 'webp',
+    'image/gif': 'gif',
+  };
+  const clean = (contentType || '').split(';')[0].trim().toLowerCase();
+  return map[clean] || 'jpg';
 }
 
-export async function uploadImages(userId: number, files: IncomingImage[]) {
-  const prepared = files.map((file) => {
-    const detected = detectImageType(file.buffer);
-    if (!detected) {
-      throw new Error('Unsupported image type');
-    }
-    return {
-      file,
-      contentType: detected.contentType,
-      extension: detected.extension,
-      fileName: objectKey(userId, detected.extension),
-    };
+function sanitizeSegment(value: string): string {
+  return encodeURIComponent(value).replace('%2F', '_');
+}
+
+/** Télécharge le `full_size_url` (et non le thumbnail) d'une photo Vinted. */
+async function downloadImage(url: string): Promise<Buffer> {
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
   });
+  if (!response.ok) {
+    throw new Error(`Failed to download image: ${response.status}`);
+  }
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (buffer.length > MAX_IMAGE_SIZE_BYTES) {
+    throw new Error('Image too large');
+  }
+  const contentType = response.headers.get('content-type') || 'image/jpeg';
+  return buffer;
+}
 
-  const uploaded: Array<{
-    userId: number;
-    bucketFileId: string;
-    fileName: string;
-    originalName: string;
-    contentType: string;
-    size: number;
-    url: string;
-  }> = [];
+export async function uploadImages(userId: number, meta: ImageMeta) {
+  const { vintedUserId, articleId, photos } = meta;
 
-  for (const item of prepared) {
-    try {
-      const stored = await uploadImage(
-        item.file.buffer,
-        item.fileName,
-        item.contentType
-      );
-      uploaded.push({
-        userId,
-        bucketFileId: stored.fileId,
-        fileName: item.fileName,
-        originalName: safeOriginalName(
-          item.file.originalname,
-          item.extension
-        ),
-        contentType: item.contentType,
-        size: item.file.buffer.length,
-        url: stored.url,
-      });
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        error.message === 'Image storage is not configured'
-      ) {
-        throw error;
-      }
-      console.error(
-        '[images] Backblaze upload failed',
-        error instanceof Error ? error.message : error
-      );
-      throw new Error('Image storage unavailable');
-    }
+  if (photos.length === 0) {
+    throw new Error('photos are required');
+  }
+  if (photos.length > MAX_PHOTOS_PER_REQUEST) {
+    throw new Error(`Too many photos (max ${MAX_PHOTOS_PER_REQUEST})`);
+  }
+
+  const results = [];
+  for (const photo of photos) {
+    const buffer = await downloadImage(photo.fullSizeUrl);
+    const contentType = responseContentType(photo.fullSizeUrl);
+    const extension = extensionFromContentType(contentType);
+    const fileName = `${objectKey(vintedUserId, articleId, photo.photoId)}.${extension}`;
+
+    const stored = await uploadImage(buffer, fileName, contentType);
+    results.push({
+      userId,
+      vintedUserId,
+      articleId,
+      bucketFileId: stored.fileId,
+      fileName,
+      originalName: `${sanitizeSegment(photo.photoId)}.${extension}`.slice(0, 255),
+      contentType,
+      size: buffer.length,
+      url: stored.url,
+    });
   }
 
   return prisma.$transaction(
-    uploaded.map((data) =>
-      prisma.image.create({
+    results.map((data) =>
+      prisma.repostImage.create({
         data,
         select: imageSelect,
       })
@@ -104,11 +107,26 @@ export async function uploadImages(userId: number, files: IncomingImage[]) {
   );
 }
 
+function responseContentType(fullSizeUrl: string): string {
+  // Default heuristic from URL extension when content-type isn't available
+  const ext = fullSizeUrl.split('.').pop()?.toLowerCase() || '';
+  switch (ext) {
+    case 'png':
+      return 'image/png';
+    case 'webp':
+      return 'image/webp';
+    case 'gif':
+      return 'image/gif';
+    default:
+      return 'image/jpeg';
+  }
+}
+
 export async function listImages(userId: number, page: number, limit: number) {
   const where = { userId };
   const [total, items] = await prisma.$transaction([
-    prisma.image.count({ where }),
-    prisma.image.findMany({
+    prisma.repostImage.count({ where }),
+    prisma.repostImage.findMany({
       where,
       orderBy: { createdAt: 'desc' },
       skip: (page - 1) * limit,

@@ -161,13 +161,16 @@
 
   /**
    * Construit le multipart attendu par POST /images. Chaque entrée peut être
-   * un Blob/File ou `{ blob, fileName }`.
+   * un Blob/File ou `{ blob, fileName }`. `vintedUserId` et `articleId`
+   * sont ajoutés comme champs simples du formulaire.
    */
-  function imageFormData(files) {
+  function imageFormData(files, vintedUserId, articleId) {
     if (typeof FormData === "undefined") {
       throw new Error("FormData indisponible dans ce navigateur");
     }
     const form = new FormData();
+    if (vintedUserId) form.append("vinted_user_id", String(vintedUserId));
+    if (articleId) form.append("article_id", String(articleId));
     for (const entry of files) {
       const blob = entry && entry.blob ? entry.blob : entry;
       if (!blob || typeof blob !== "object") {
@@ -238,7 +241,13 @@
       case "images.upload": {
         const files = payload && Array.isArray(payload.files) ? payload.files : [];
         if (files.length === 0) throw new Error("aucune image à envoyer");
-        return authedRequest("/images", { formData: imageFormData(files) });
+        return authedRequest("/images", {
+          formData: imageFormData(
+            files,
+            payload.vintedUserId,
+            payload.articleId
+          ),
+        });
       }
 
       default:

@@ -1,6 +1,7 @@
 import { NextFunction, Request, Response } from 'express';
 import { sendSuccess } from '../../utils/response';
 import { listImagesQuerySchema } from './images.validators';
+import { uploadImagesSchema } from './images.validators';
 import * as imageService from './images.service';
 
 const wrap =
@@ -8,19 +9,16 @@ const wrap =
   (req: Request, res: Response, next: NextFunction) =>
     fn(req, res).catch(next);
 
-function uploadedFiles(req: Request): Express.Multer.File[] {
-  if (!req.files) return [];
-  if (Array.isArray(req.files)) return req.files;
-  return Object.values(req.files).flat();
-}
-
 export const uploadHandler = wrap(async (req, res) => {
-  const files = uploadedFiles(req);
-  if (files.length === 0) {
-    throw new Error('Image file is required');
-  }
-
-  const images = await imageService.uploadImages(req.userId!, files);
+  const body = uploadImagesSchema.parse(req.body);
+  const images = await imageService.uploadImages(req.userId!, {
+    vintedUserId: body.vinted_user_id,
+    articleId: body.article_id,
+    photos: body.photos.map((p) => ({
+      photoId: p.photo_id,
+      fullSizeUrl: p.full_size_url,
+    })),
+  });
   sendSuccess(res, images, 201);
 });
 

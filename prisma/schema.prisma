@@ -22,7 +22,7 @@ model User {
   passwordResets       PasswordReset[]
   emailVerifications   EmailVerification[]
   descriptionTemplates DescriptionTemplate[]
-  images               Image[]
+  images               RepostImage[]
 
   @@map("user")
 }
@@ -66,9 +66,11 @@ model DescriptionTemplate {
   @@map("description_template")
 }
 
-model Image {
+model RepostImage {
   id           Int      @id @default(autoincrement())
   userId       Int      @map("user_id")
+  vintedUserId String   @map("vinted_user_id") @db.VarChar(64)
+  articleId    String   @map("article_id") @db.VarChar(64)
   bucketFileId String   @unique @map("bucket_file_id") @db.VarChar(255)
   fileName     String   @map("file_name") @db.VarChar(512)
   originalName String   @map("original_name") @db.VarChar(255)
@@ -80,5 +82,5 @@ model Image {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, createdAt])
-  @@map("image")
+  @@map("repost_image")
 }

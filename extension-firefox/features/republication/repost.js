@@ -280,6 +280,14 @@
     );
   }
 
+  /** Renvoie les URLs de toutes les photos de l'article. */
+  function allPhotoUrls(item) {
+    const photos = Array.isArray(item.photos) ? item.photos : [];
+    return photos
+      .map((p) => p && (p.full_size_url || p.url))
+      .filter(Boolean);
+  }
+
   function itemUrl(item) {
     if (item.url) return item.url;
     const path = item.path || "/items/" + item.id;
@@ -623,7 +631,7 @@
     "image/heif": "heif",
   };
 
-  function imageFileName(item, url, blob) {
+  function imageFileName(item, url, blob, index) {
     let base = "";
     try {
       const parsed = new URL(url, location.href);
@@ -637,7 +645,26 @@
       item && item.id != null
         ? String(item.id).replace(/[^A-Za-z0-9._-]/g, "_")
         : "article";
-    return "vinted-" + id + "-" + base;
+    const suffix = index != null && index > 1 ? "-" + index : "";
+    return "vinted-" + id + suffix + "-" + base;
+  }
+
+  function getVintedUserId() {
+    return wardrobeIdFromLocation() || "";
+  }
+
+  function groupFilesByArticle(entries, files) {
+    const map = new Map();
+    let index = 0;
+    for (const entry of entries) {
+      const urlCount = allPhotoUrls(entry.item).length;
+      if (urlCount === 0) continue;
+      const articleId = String(entry.item.id || "");
+      const batch = files.slice(index, index + urlCount);
+      index += urlCount;
+      map.set(articleId, batch);
+    }
+    return map;
   }
 
   function isVintedImageUrl(url) {
@@ -751,8 +778,8 @@
   }
 
   /**
-   * Test d'upload : télécharge la photo principale de chaque article actif
-   * sélectionné puis l'envoie à POST /images par lots de 20.
+   * Test d'upload : télécharge toutes les photos de chaque article actif
+   * sélectionné puis les envoie à POST /images par lots de 20.
    */
   async function uploadSelectedImages() {
     if (uploadBusy) return;
@@ -763,7 +790,9 @@
       return;
     }
 
-    const withPhoto = entries.filter((entry) => Boolean(photoUrl(entry.item)));
+    const withPhoto = entries.filter((entry) =>
+      allPhotoUrls(entry.item).length > 0
+    );
     const withoutPhoto = entries.length - withPhoto.length;
     if (withPhoto.length === 0) {
       setUploadStatus("error", "Aucun article sélectionné n'a de photo.");
@@ -778,23 +807,42 @@
     );
 
     try {
-      const downloads = await Promise.allSettled(
-        withPhoto.map(async (entry) => {
-          const url = photoUrl(entry.item);
-          const blob = await fetchImageBlob(url);
-          return { blob, fileName: imageFileName(entry.item, url, blob) };
-        })
-      );
+      const downloads = [];
+      for (const entry of withPhoto) {
+        const item = entry.item;
+        const urls = allPhotoUrls(item);
+        const results = await Promise.all(
+          urls.map(async (url, index) => {
+            try {
+              const blob = await fetchImageBlob(url);
+              const fileName = imageFileName(
+                item,
+                url,
+                blob,
+                urls.length > 1 ? index + 1 : undefined
+              );
+              return { status: "fulfilled", value: { blob, fileName } };
+            } catch (err) {
+              return {
+                status: "rejected",
+                item,
+                reason: err,
+              };
+            }
+          })
+        );
+        downloads.push(...results);
+      }
 
       const files = [];
       const failures = [];
-      downloads.forEach((result, index) => {
+      downloads.forEach((result) => {
         if (result.status === "fulfilled") {
           files.push(result.value);
           return;
         }
-        const item = withPhoto[index].item;
-        const name = itemName(item) || "Article " + item.id;
+        const name =
+          (result.item && itemName(result.item)) || "Article";
         const reason = result.reason;
         failures.push(name + " : " + ((reason && reason.message) || reason));
       });
@@ -803,17 +851,34 @@
         throw new Error(failures[0] || "aucune image téléchargée");
       }
 
-      setUploadStatus(
-        "progress",
-        "Envoi de " + imageCountText(files.length) + "…"
-      );
+      // Envoie par article : tous les fichiers d'un même article sont
+      // regroupés par articleId ; le backend reçoit vintedUserId et
+      // articleId pour stocker le chemin B2 et la table repost_image.
+      const vintedUserId = getVintedUserId();
+      const byArticle = new Map();
+      let offset = 0;
+      for (const entry of withPhoto) {
+        const urls = allPhotoUrls(entry.item);
+        const articleId = String(entry.item.id || "");
+        const batch = files.slice(offset, offset + urls.length);
+        offset += urls.length;
+        byArticle.set(articleId, batch);
+      }
       let uploaded = 0;
-      for (let start = 0; start < files.length; start += MAX_UPLOAD_BATCH) {
-        const batch = files.slice(start, start + MAX_UPLOAD_BATCH);
-        const data = await detnivApiClient().handle("images.upload", {
-          files: batch,
-        });
-        uploaded += Array.isArray(data) ? data.length : batch.length;
+      for (const [articleId, articleFiles] of byArticle) {
+        for (
+          let start = 0;
+          start < articleFiles.length;
+          start += MAX_UPLOAD_BATCH
+        ) {
+          const batch = articleFiles.slice(start, start + MAX_UPLOAD_BATCH);
+          const data = await detnivApiClient().handle("images.upload", {
+            files: batch,
+            vintedUserId,
+            articleId,
+          });
+          uploaded += Array.isArray(data) ? data.length : batch.length;
+        }
       }
 
       const details = [];
