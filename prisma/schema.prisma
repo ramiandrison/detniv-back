@@ -17,11 +17,12 @@ model User {
   name      String?
   isActive  Boolean  @default(false) @map("is_active")
   createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt      @map("updated_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
-  passwordResets      PasswordReset[]
-  emailVerifications  EmailVerification[]
+  passwordResets       PasswordReset[]
+  emailVerifications   EmailVerification[]
   descriptionTemplates DescriptionTemplate[]
+  images               Image[]
 
   @@map("user")
 }
@@ -58,9 +59,26 @@ model DescriptionTemplate {
   name      String   @db.VarChar(120)
   text      String   @db.Text
   createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt      @map("updated_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("description_template")
+}
+
+model Image {
+  id           Int      @id @default(autoincrement())
+  userId       Int      @map("user_id")
+  bucketFileId String   @unique @map("bucket_file_id") @db.VarChar(255)
+  fileName     String   @map("file_name") @db.VarChar(512)
+  originalName String   @map("original_name") @db.VarChar(255)
+  contentType  String   @map("content_type") @db.VarChar(100)
+  size         Int
+  url          String   @db.VarChar(1024)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("image")
 }

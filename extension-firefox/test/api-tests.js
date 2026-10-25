@@ -130,6 +130,40 @@ function mockFetch(url, options) {
     assert.strictEqual(call.options.headers.Authorization, "Bearer access-1");
   });
 
+  await test("api : images.upload envoie un multipart authentifié", async () => {
+    fetchRoutes["http://localhost:3001/api/images"] = {
+      status: 201,
+      body: {
+        success: true,
+        data: [{ id: 11, url: "https://cdn.example/11.jpg" }],
+      },
+    };
+    const blob = new Blob(["image-bytes"], { type: "image/jpeg" });
+    const data = await api.handle("images.upload", {
+      files: [{ blob, fileName: "vinted-1-photo.jpg" }],
+    });
+    assert.strictEqual(data[0].id, 11);
+    const call = fetchLog[fetchLog.length - 1];
+    assert.strictEqual(call.url, "http://localhost:3001/api/images");
+    assert.strictEqual(call.options.headers.Authorization, "Bearer access-1");
+    assert.strictEqual(
+      call.options.headers["Content-Type"],
+      undefined,
+      "le Content-Type multipart doit être posé par le navigateur"
+    );
+    assert.ok(call.options.body instanceof FormData, "corps non multipart");
+    const sent = call.options.body.getAll("files");
+    assert.strictEqual(sent.length, 1);
+    assert.strictEqual(sent[0].name, "vinted-1-photo.jpg");
+  });
+
+  await test("api : images.upload sans fichier → erreur explicite", async () => {
+    await assert.rejects(
+      () => api.handle("images.upload", { files: [] }),
+      /aucune image à envoyer/
+    );
+  });
+
   await test("api : 401 → refresh automatique puis nouvel essai", async () => {
     global.browser.__store.detnivSession.expiresAt = Date.now() + 60_000;
     fetchLog.length = 0;

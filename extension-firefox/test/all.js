@@ -12,6 +12,7 @@ const path = require("node:path");
 
 const SUITES = [
   "manifest-tests.js",
+  "background-tests.js",
   "api-tests.js",
   "run-tests.js",
   "dom-tests.js",

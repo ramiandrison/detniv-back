@@ -1,0 +1,51 @@
+{
+  "archivedAt": "2026-10-25T06:25:02.129Z",
+  "reason": "Historical migrations were not replayable from a clean database.",
+  "migrations": [
+    {
+      "id": "65fc01dd-47cc-45a6-8963-2342f5e2f70d",
+      "checksum": "46afcb5787fccad136326b689c58c336f69ea34e8527409e2866fbcc828b3946",
+      "finished_at": "2026-07-19T10:29:44.371Z",
+      "migration_name": "20260719102943_init",
+      "logs": null,
+      "rolled_back_at": null,
+      "started_at": "2026-07-19T10:29:43.921Z",
+      "applied_steps_count": "1"
+    },
+    {
+      "id": "fd5a6f13-4c93-4687-811c-5b5582c88148",
+      "checksum": "a2372f4e7db7764f061ee6790cb57a865a0152a2c993c7e695bedad179569054",
+      "finished_at": "2026-07-19T16:34:16.543Z",
+      "migration_name": "20260719163416_snake_case_tables",
+      "logs": null,
+      "rolled_back_at": null,
+      "started_at": "2026-07-19T16:34:16.184Z",
+      "applied_steps_count": "1"
+    },
+    {
+      "id": "963269f7-d51f-4bcb-83da-bf24a7708499",
+      "checksum": "3a4c52a8c7eec259b51814ee1f5485a3e0a66811073c62f401035443c32c5555",
+      "finished_at": "2026-07-19T17:16:14.789Z",
+      "migration_name": "20260719171614_is_active_field",
+      "logs": null,
+      "rolled_back_at": null,
+      "started_at": "2026-07-19T17:16:14.465Z",
+      "applied_steps_count": "1"
+    },
+    {
+      "id": "f097c503-389e-42a4-b8fc-74a792bd65fd",
+      "checksum": "be7941cec70fff4f18bb8a10ec35f021d09979e16fe4d4f228fb4f25755a4604",
+      "finished_at": "2026-10-25T06:15:55.475Z",
+      "migration_name": "20261025000000_add_images",
+      "logs": "",
+      "rolled_back_at": null,
+      "started_at": "2026-10-25T06:15:55.475Z",
+      "applied_steps_count": "0"
+    }
+  ],
+  "counts": {
+    "user": 7,
+    "description_template": 2,
+    "image": 0
+  }
+}

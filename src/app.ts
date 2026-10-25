@@ -5,6 +5,7 @@ import { swaggerSpec } from './config/swagger';
 import { errorHandler } from './middlewares/errorHandler';
 import authRoutes from './modules/auth/auth.routes';
 import descriptionRoutes from './modules/descriptions/descriptions.routes';
+import imageRoutes from './modules/images/images.routes';
 
 const app = express();
 
@@ -17,6 +18,7 @@ app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/descriptions', descriptionRoutes);
+app.use('/api/images', imageRoutes);
 
 // Health check
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));

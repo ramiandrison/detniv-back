@@ -71,14 +71,28 @@
     return `erreur HTTP ${status}`;
   }
 
-  async function rawRequest(path, { method = "POST", body, headers = {} } = {}) {
+  async function rawRequest(
+    path,
+    { method = "POST", body, headers = {}, formData } = {}
+  ) {
     const base = await apiBaseUrl();
+    const multipart =
+      typeof FormData !== "undefined" && formData instanceof FormData;
+    let requestBody;
+    if (multipart) {
+      requestBody = formData;
+    } else if (body !== undefined) {
+      requestBody = JSON.stringify(body);
+    }
     let res;
     try {
       res = await fetch(base + path, {
         method,
-        headers: { "Content-Type": "application/json", ...headers },
-        body: body === undefined ? undefined : JSON.stringify(body),
+        // Le navigateur doit poser lui-même le boundary multipart.
+        headers: multipart
+          ? { ...headers }
+          : { "Content-Type": "application/json", ...headers },
+        body: requestBody,
       });
     } catch (_) {
       throw new Error(
@@ -116,7 +130,7 @@
   }
 
   /** POST authentifié ; tente un refresh + un nouvel essai sur 401. */
-  async function authedRequest(path, { method = "POST", body } = {}) {
+  async function authedRequest(path, { method = "POST", body, formData } = {}) {
     let session = await getSession();
     if (!session || !session.accessToken) {
       throw new Error("non connecté à Detniv");
@@ -128,6 +142,7 @@
       rawRequest(path, {
         method,
         body,
+        formData,
         headers: { Authorization: `Bearer ${token}` },
       });
     try {
@@ -142,6 +157,26 @@
       }
       return attempt(session.accessToken);
     }
+  }
+
+  /**
+   * Construit le multipart attendu par POST /images. Chaque entrée peut être
+   * un Blob/File ou `{ blob, fileName }`.
+   */
+  function imageFormData(files) {
+    if (typeof FormData === "undefined") {
+      throw new Error("FormData indisponible dans ce navigateur");
+    }
+    const form = new FormData();
+    for (const entry of files) {
+      const blob = entry && entry.blob ? entry.blob : entry;
+      if (!blob || typeof blob !== "object") {
+        throw new Error("image invalide");
+      }
+      const fileName = (entry && entry.fileName) || blob.name || "image.jpg";
+      form.append("files", blob, fileName);
+    }
+    return form;
   }
 
   /* ──────────────── Actions ──────────────── */
@@ -198,6 +233,12 @@
           throw new Error("chemin d'API invalide");
         }
         return authedRequest(path, { method, body });
+      }
+
+      case "images.upload": {
+        const files = payload && Array.isArray(payload.files) ? payload.files : [];
+        if (files.length === 0) throw new Error("aucune image à envoyer");
+        return authedRequest("/images", { formData: imageFormData(files) });
       }
 
       default:

@@ -23,5 +23,12 @@ export const env = {
     pass: process.env.MAIL_PASS ?? '',
     from: process.env.MAIL_FROM ?? 'no-reply@example.com',
   },
+  b2: {
+    keyId: process.env.B2_KEY_ID ?? '',
+    applicationKey: process.env.B2_APPLICATION_KEY ?? '',
+    bucketId: process.env.B2_BUCKET_ID ?? '',
+    bucketName: process.env.B2_BUCKET_NAME ?? '',
+    publicUrl: (process.env.B2_PUBLIC_URL ?? '').replace(/\/+$/, ''),
+  },
   appUrl: process.env.APP_URL ?? 'http://localhost:3000',
 };

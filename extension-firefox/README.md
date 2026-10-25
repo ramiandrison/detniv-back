@@ -89,6 +89,14 @@ seule cette table (et `manifest.json`) est à mettre à jour.
 `about:debugging` → « Ce Firefox » → « Charger un module temporaire » →
 sélectionner `manifest.json`.
 
+Les photos d'articles Vinted sont téléchargées par le module d'arrière-plan
+(les content scripts sont soumis au CORS du CDN `*.vinted.net`). La permission
+d'hôte associée (`https://*.vinted.net/*`) est déclarée en
+`optional_host_permissions` : au clic sur le bouton « Republier », l'extension
+demande l'accès s'il n'est pas déjà accordé. Si le téléchargement échoue, le
+message affiché indique de recharger l'extension via `about:debugging` puis
+l'onglet Vinted.
+
 ## Icônes
 
 ```bash

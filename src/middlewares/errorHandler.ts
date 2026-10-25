@@ -13,6 +13,10 @@ const BUSINESS_STATUS: Record<string, number> = {
   'Invalid or expired reset token': 400,
   'Too many descriptions': 400,
   'Description not found': 404,
+  'Image file is required': 400,
+  'Unsupported image type': 415,
+  'Image storage is not configured': 503,
+  'Image storage unavailable': 502,
 };
 
 export const errorHandler = (err: Error, _req: Request, res: Response, _next: NextFunction): void => {

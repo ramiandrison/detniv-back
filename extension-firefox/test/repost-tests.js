@@ -99,6 +99,15 @@ const FIXTURE_NO_CARD_HTML = `<!DOCTYPE html>
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+async function waitFor(predicate, label, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await sleep(20);
+  }
+  throw new Error("condition non satisfaite : " + label);
+}
+
 function makeItem(overrides) {
   return Object.assign(
     {
@@ -138,9 +147,14 @@ function pageBody(items, page, totalPages, totalEntries) {
 function boot({
   url = "https://www.vinted.fr/member/251881314",
   pages = {},
+  images = {},
+  detnivApi,
   html,
   cookie,
   runtimeCookie,
+  runtimeHandler,
+  runtimeUnresponsive,
+  permissionGranted,
   seedStore,
   autoWardrobe,
   activePressed,
@@ -176,12 +190,30 @@ function boot({
       },
     },
     runtime:
-      runtimeCookie === undefined
+      runtimeCookie === undefined &&
+      !runtimeHandler &&
+      !runtimeUnresponsive
         ? undefined
         : {
             async sendMessage(message) {
               messages.push(message);
+              if (runtimeUnresponsive) return undefined;
+              if (runtimeHandler) {
+                const result = await runtimeHandler(message);
+                if (result !== undefined) return result;
+              }
               return { ok: true, value: runtimeCookie };
+            },
+          },
+    permissions:
+      permissionGranted === undefined && !runtimeHandler && !runtimeUnresponsive
+        ? undefined
+        : {
+            async contains() {
+              return permissionGranted !== false;
+            },
+            async request() {
+              return permissionGranted !== false;
             },
           },
   };
@@ -253,6 +285,19 @@ function boot({
         json: async () => ({ message }),
       });
     }
+    const image = images[String(fetchUrl)];
+    if (image) {
+      const spec = typeof image === "function" ? image() : image;
+      const status = spec.status || 200;
+      return Promise.resolve({
+        ok: status >= 200 && status < 300,
+        status,
+        blob: async () =>
+          new win.Blob([spec.bytes || "image-bytes"], {
+            type: spec.type || "image/jpeg",
+          }),
+      });
+    }
     const route = pages[String(fetchUrl)];
     if (!route) {
       return Promise.resolve({
@@ -265,6 +310,7 @@ function boot({
     return Promise.resolve({ ok: true, status: 200, json: async () => body });
   };
 
+  if (detnivApi) win.DetnivApi = detnivApi;
   win.eval(REPOST_SRC);
   return {
     win,
@@ -893,6 +939,394 @@ const GRID_SEL = '[class*="feed-grid"]';
     );
     assert.strictEqual(countText(), "1 sélectionné");
     assert.strictEqual(boxes()[1].checked, true);
+
+    // Le bouton et son statut sont réinjectés avec le reste des contrôles.
+    env.doc.getElementById("detniv-repost-submit").remove();
+    env.doc.getElementById("detniv-repost-upload-status").remove();
+    await sleep(300);
+    assert.strictEqual(
+      env.doc.querySelectorAll("#detniv-repost-submit").length,
+      1,
+      "bouton Republier non réinjecté"
+    );
+    assert.strictEqual(
+      env.doc.querySelectorAll("#detniv-repost-upload-status").length,
+      1,
+      "statut d'upload non réinjecté"
+    );
+  });
+
+  await test("repost : bouton Republier jaune et upload des images actives", async () => {
+    const activeUrl = WARDROBE + "?page=1&per_page=20&cond=active";
+    const hiddenUrl = WARDROBE + "?page=1&per_page=20&cond=hidden";
+    const uploadCalls = [];
+    const env = boot({
+      pages: {
+        [activeUrl]: pageBody(
+          [
+            makeItem({ id: 701, title: "Actif A" }),
+            makeItem({ id: 702, title: "Actif B" }),
+          ],
+          1,
+          1,
+          2
+        ),
+        [hiddenUrl]: pageBody(
+          [makeItem({ id: 703, title: "Masqué C" })],
+          1,
+          1,
+          1
+        ),
+      },
+      images: {
+        "https://img.example/full.jpg": { type: "image/jpeg" },
+      },
+      detnivApi: {
+        async handle(action, payload) {
+          uploadCalls.push({ action, payload });
+          return (payload.files || []).map((file, index) => ({
+            id: index + 1,
+            url: "https://cdn.example/" + file.fileName,
+          }));
+        },
+      },
+    });
+    await env.repost().run();
+
+    const filters = env.doc.querySelector(FILTERS_SEL);
+    const button = filters.querySelector("#detniv-repost-submit");
+    const status = () => env.doc.querySelector("#detniv-repost-upload-status");
+    const boxes = () => [
+      ...env.closet().querySelectorAll(
+        '.detniv-repost-select input[type="checkbox"]'
+      ),
+    ];
+
+    assert.ok(button, "bouton Republier absent");
+    assert.ok(filters.contains(button), "bouton hors de la barre de filtres");
+    assert.strictEqual(button.textContent, "Republier");
+    assert.strictEqual(button.disabled, true, "bouton actif sans sélection");
+    const css = env.doc.getElementById("detniv-repost-styles").textContent;
+    assert.match(
+      css,
+      /\.detniv-repost-submit\s*\{[^}]*background:\s*#ffd600/s,
+      "bouton non jaune Detniv"
+    );
+
+    boxes()[0].click();
+    boxes()[1].click();
+    assert.strictEqual(button.disabled, false);
+    assert.match(button.title, /2 articles actifs/);
+
+    button.click();
+    await waitFor(
+      () => uploadCalls.length === 1 && button.textContent === "Republier",
+      "upload initial"
+    );
+    assert.strictEqual(uploadCalls[0].action, "images.upload");
+    assert.strictEqual(uploadCalls[0].payload.files.length, 2);
+    assert.ok(uploadCalls[0].payload.files[0].blob.size > 0);
+    assert.match(uploadCalls[0].payload.files[0].fileName, /^vinted-701-/);
+    assert.ok(
+      env.fetchLog.some(
+        (call) => call.url === "https://img.example/full.jpg"
+      ),
+      "photo Vinted non téléchargée"
+    );
+    assert.strictEqual(status().textContent, "2 images envoyées sur Detniv.");
+    assert.ok(
+      status().classList.contains("detniv-repost-upload-status--success")
+    );
+
+    // Une sélection faite en Masqués ne doit pas être envoyée.
+    env.doc
+      .querySelector('[data-testid="closet-seller-filters-hidden"]')
+      .click();
+    await sleep(300);
+    const hiddenBoxes = [
+      ...env.closet().querySelectorAll(
+        '.detniv-repost-select input[type="checkbox"]'
+      ),
+    ];
+    hiddenBoxes[0].click();
+    assert.strictEqual(
+      env.doc.querySelector("#detniv-repost-selection-count").textContent,
+      "3 sélectionnés"
+    );
+    assert.match(button.title, /2 articles actifs/);
+    button.click();
+    await waitFor(() => uploadCalls.length === 2, "second upload");
+    assert.strictEqual(uploadCalls[1].payload.files.length, 2);
+  });
+
+  await test("repost : photo vinted.net téléchargée via le background", async () => {
+    const activeUrl = WARDROBE + "?page=1&per_page=20&cond=active";
+    const photo = "https://images1.vinted.net/t/03_test/f800/photo.jpeg?s=abc";
+    const uploadCalls = [];
+    const dataUrl =
+      "data:image/jpeg;base64," +
+      Buffer.from("image-bytes").toString("base64");
+    const env = boot({
+      pages: {
+        [activeUrl]: pageBody(
+          [
+            makeItem({
+              id: 731,
+              title: "Actif CDN",
+              photos: [{ is_main: true, full_size_url: photo, url: photo }],
+            }),
+          ],
+          1,
+          1,
+          1
+        ),
+      },
+      runtimeHandler: (message) =>
+        message.type === "detniv:fetch-image"
+          ? { ok: true, dataUrl }
+          : undefined,
+      permissionGranted: true,
+      detnivApi: {
+        async handle(action, payload) {
+          uploadCalls.push({ action, payload });
+          return [{ id: 1, url: "https://cdn.example/1.jpg" }];
+        },
+      },
+    });
+    await env.repost().run();
+    env.closet()
+      .querySelector('.detniv-repost-select input[type="checkbox"]')
+      .click();
+    env.doc.querySelector("#detniv-repost-submit").click();
+    await waitFor(() => uploadCalls.length === 1, "upload via background");
+
+    assert.strictEqual(env.messages[0].type, "detniv:fetch-image");
+    assert.strictEqual(env.messages[0].url, photo);
+    assert.ok(
+      !env.fetchLog.some((call) => call.url === photo),
+      "le content script ne doit pas télécharger l'image soumise au CORS"
+    );
+    const file = uploadCalls[0].payload.files[0];
+    assert.strictEqual(file.blob.type, "image/jpeg");
+    assert.ok(file.blob.size > 0);
+  });
+
+  await test("repost : permission d'hôte images refusée → erreur explicite", async () => {
+    const activeUrl = WARDROBE + "?page=1&per_page=20&cond=active";
+    const photo = "https://images1.vinted.net/t/03_test/f800/photo.jpeg?s=abc";
+    const env = boot({
+      pages: {
+        [activeUrl]: pageBody(
+          [
+            makeItem({
+              id: 741,
+              title: "Actif CDN",
+              photos: [{ is_main: true, full_size_url: photo, url: photo }],
+            }),
+          ],
+          1,
+          1,
+          1
+        ),
+      },
+      permissionGranted: false,
+    });
+    await env.repost().run();
+    env.closet()
+      .querySelector('.detniv-repost-select input[type="checkbox"]')
+      .click();
+    env.doc.querySelector("#detniv-repost-submit").click();
+
+    const status = () => env.doc.querySelector("#detniv-repost-upload-status");
+    await waitFor(
+      () => /Autorisez l'accès aux images Vinted/.test(status().textContent),
+      "statut d'erreur"
+    );
+    assert.ok(
+      status().classList.contains("detniv-repost-upload-status--error")
+    );
+    assert.strictEqual(env.messages.length, 0, "téléchargement désiré");
+  });
+
+  await test("repost : background injoignable → erreur explicite sans fetch direct", async () => {
+    const activeUrl = WARDROBE + "?page=1&per_page=20&cond=active";
+    const photo = "https://images1.vinted.net/t/03_test/f800/photo.jpeg?s=abc";
+    const env = boot({
+      pages: {
+        [activeUrl]: pageBody(
+          [
+            makeItem({
+              id: 742,
+              title: "Actif CDN",
+              photos: [{ is_main: true, full_size_url: photo, url: photo }],
+            }),
+          ],
+          1,
+          1,
+          1
+        ),
+      },
+      permissionGranted: true,
+      runtimeHandler: (message) =>
+        message.type === "detniv:fetch-image"
+          ? { ok: false, error: "NetworkError when attempting to fetch resource." }
+          : undefined,
+      detnivApi: {
+        async handle() {
+          throw new Error("unused");
+        },
+      },
+    });
+    await env.repost().run();
+    env.closet()
+      .querySelector('.detniv-repost-select input[type="checkbox"]')
+      .click();
+    env.doc.querySelector("#detniv-repost-submit").click();
+
+    const status = () => env.doc.querySelector("#detniv-repost-upload-status");
+    await waitFor(
+      () =>
+        /téléchargement de l'image impossible|NetworkError|arrière-plan/.test(
+          status().textContent
+        ),
+      "statut d'erreur"
+    );
+    assert.ok(
+      !env.fetchLog.some((call) => call.url === photo),
+      "pas de fetch direct d'une image Vinted soumise au CORS"
+    );
+    assert.strictEqual(
+      env.messages.length,
+      1,
+      "une seule tentative via le background"
+    );
+  });
+
+  await test("repost : background sans réponse → erreur explicite sans fetch direct", async () => {
+    const activeUrl = WARDROBE + "?page=1&per_page=20&cond=active";
+    const photo = "https://images1.vinted.net/t/03_test/f800/photo.jpeg?s=abc";
+    const env = boot({
+      pages: {
+        [activeUrl]: pageBody(
+          [
+            makeItem({
+              id: 743,
+              title: "Actif CDN",
+              photos: [{ is_main: true, full_size_url: photo, url: photo }],
+            }),
+          ],
+          1,
+          1,
+          1
+        ),
+      },
+      permissionGranted: true,
+      runtimeUnresponsive: true,
+      detnivApi: {
+        async handle() {
+          throw new Error("unused");
+        },
+      },
+    });
+    await env.repost().run();
+    env.closet()
+      .querySelector('.detniv-repost-select input[type="checkbox"]')
+      .click();
+    env.doc.querySelector("#detniv-repost-submit").click();
+
+    const status = () => env.doc.querySelector("#detniv-repost-upload-status");
+    await waitFor(
+      () =>
+        /n'a pas répondu|recharguez|rechargez|arrière-plan/.test(
+          status().textContent
+        ),
+      "statut d'erreur"
+    );
+    assert.ok(
+      !env.fetchLog.some((call) => call.url === photo),
+      "pas de fetch direct d'une image Vinted soumise au CORS"
+    );
+  });
+
+  await test("repost : seuls les articles actifs alimentent le bouton Republier", async () => {
+    const activeUrl = WARDROBE + "?page=1&per_page=20&cond=active";
+    const hiddenUrl = WARDROBE + "?page=1&per_page=20&cond=hidden";
+    const env = boot({
+      pages: {
+        [activeUrl]: pageBody(
+          [makeItem({ id: 711, title: "Actif" })],
+          1,
+          1,
+          1
+        ),
+        [hiddenUrl]: pageBody(
+          [makeItem({ id: 712, title: "Masqué" })],
+          1,
+          1,
+          1
+        ),
+      },
+    });
+    await env.repost().run();
+    env.doc
+      .querySelector('[data-testid="closet-seller-filters-hidden"]')
+      .click();
+    await sleep(300);
+    env.closet()
+      .querySelector('.detniv-repost-select input[type="checkbox"]')
+      .click();
+
+    const button = env.doc.querySelector("#detniv-repost-submit");
+    assert.strictEqual(
+      env.doc.querySelector("#detniv-repost-selection-count").textContent,
+      "1 sélectionné"
+    );
+    assert.strictEqual(button.disabled, true);
+    assert.match(button.title, /Seuls les articles actifs/);
+  });
+
+  await test("repost : échec d'upload affiché sans perdre la sélection", async () => {
+    const activeUrl = WARDROBE + "?page=1&per_page=20&cond=active";
+    const env = boot({
+      pages: {
+        [activeUrl]: pageBody(
+          [makeItem({ id: 721, title: "Actif" })],
+          1,
+          1,
+          1
+        ),
+      },
+      images: {
+        "https://img.example/full.jpg": { type: "image/jpeg" },
+      },
+      detnivApi: {
+        async handle() {
+          throw new Error("Image storage is not configured");
+        },
+      },
+    });
+    await env.repost().run();
+    const button = env.doc.querySelector("#detniv-repost-submit");
+    env.closet()
+      .querySelector('.detniv-repost-select input[type="checkbox"]')
+      .click();
+    button.click();
+
+    const status = () =>
+      env.doc.querySelector("#detniv-repost-upload-status");
+    await waitFor(
+      () => /Échec de l'envoi/.test(status().textContent),
+      "statut d'erreur"
+    );
+    assert.match(status().textContent, /Image storage is not configured/);
+    assert.ok(
+      status().classList.contains("detniv-repost-upload-status--error")
+    );
+    assert.strictEqual(button.disabled, false);
+    assert.strictEqual(
+      env.doc.querySelector("#detniv-repost-selection-count").textContent,
+      "1 sélectionné"
+    );
   });
 
   await test("repost : barre de filtres responsive en mobile", async () => {

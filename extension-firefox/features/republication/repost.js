@@ -15,6 +15,13 @@
  * cocher ; le nombre total d'articles sélectionnés est affiché dans la barre
  * de filtres. Un re-rendu React de la grille ré-applique nos cards.
  *
+ * Un bouton jaune « Republier » est ajouté à la barre de filtres. Il demande
+ * si besoin la permission optionnelle d'hôte des images Vinted, puis envoie
+ * à POST /images la photo principale des articles actifs sélectionnés
+ * (multipart, lots de 20) et affiche le résultat de ce test d'upload. Les
+ * photos Vinted ne sont jamais téléchargées par le content script (CORS du
+ * CDN) ; le background est la seule voie, avec message d'erreur explicite.
+ *
  * Déclenché depuis le panneau Detniv (menu « Republication ») :
  *   DetnivRepost.run() → { count, pages }
  *
@@ -43,7 +50,11 @@
   const SELECT_CLASS = "detniv-repost-select";
   const SELECTED_CLASS = "detniv-repost-selected";
   const SELECTION_COUNT_ID = "detniv-repost-selection-count";
+  const REPOST_BUTTON_ID = "detniv-repost-submit";
+  const UPLOAD_STATUS_ID = "detniv-repost-upload-status";
   const SEARCH_HIDDEN_CLASS = "detniv-repost-hidden";
+  const MAX_UPLOAD_BATCH = 20;
+  const IMAGE_HOST_PERMISSION = "https://*.vinted.net/*";
   const SORT_OPTIONS = [
     { value: "default", label: "Ordre par défaut" },
     { value: "id-desc", label: "Plus récents" },
@@ -72,7 +83,15 @@
   let csrf = null;
   let searchQuery = "";
   let sortMode = "default";
-  const selectedKeys = new Set();
+  let uploadBusy = false;
+  let uploadStatus = { kind: "idle", text: "" };
+  /**
+   * Sélection par clé d'article : `{ item, condition }`. L'objet complet est
+   * conservé pour pouvoir uploader un article même après un changement de
+   * filtre ou un re-rendu React. `condition` est le filtre d'où vient la
+   * sélection : seuls les articles « active » sont republiables.
+   */
+  const selectedItems = new Map();
 
   function sleep(ms) {
     return new Promise((r) => setTimeout(r, ms));
@@ -382,16 +401,34 @@
     return count + " sélectionné" + (count > 1 ? "s" : "");
   }
 
+  function articleCountText(count) {
+    return count + " article" + (count > 1 ? "s" : "");
+  }
+
+  function imageCountText(count) {
+    return count + " image" + (count > 1 ? "s" : "");
+  }
+
+  /** Articles sélectionnés issus du filtre « Actifs » uniquement. */
+  function activeSelectionEntries() {
+    const entries = [];
+    for (const entry of selectedItems.values()) {
+      if (entry && entry.condition === "active") entries.push(entry);
+    }
+    return entries;
+  }
+
   /** Met à jour le compteur, y compris après sa réinjection par React. */
   function syncSelectionCount(node) {
     const target = node || document.getElementById(SELECTION_COUNT_ID);
     if (!target) return;
-    const count = selectedKeys.size;
+    const count = selectedItems.size;
     target.textContent = selectionCountText(count);
     target.classList.toggle(
       "detniv-repost-selection-count--active",
       count > 0
     );
+    syncRepostButton();
   }
 
   function createSelectionCount() {
@@ -404,6 +441,411 @@
     node.title = "Nombre total d'articles sélectionnés";
     syncSelectionCount(node);
     return node;
+  }
+
+  /* ──────────────── Bouton « Republier » et upload ──────────────── */
+
+  function syncUploadStatus(node) {
+    const target = node || document.getElementById(UPLOAD_STATUS_ID);
+    if (!target) return;
+    target.textContent = uploadStatus.text;
+    target.hidden = !uploadStatus.text;
+    target.classList.toggle(
+      "detniv-repost-upload-status--error",
+      uploadStatus.kind === "error"
+    );
+    target.classList.toggle(
+      "detniv-repost-upload-status--success",
+      uploadStatus.kind === "success"
+    );
+    target.classList.toggle(
+      "detniv-repost-upload-status--warning",
+      uploadStatus.kind === "warning"
+    );
+    target.classList.toggle(
+      "detniv-repost-upload-status--progress",
+      uploadStatus.kind === "progress"
+    );
+  }
+
+  function setUploadStatus(kind, text) {
+    uploadStatus = { kind, text: text || "" };
+    syncUploadStatus();
+  }
+
+  function createUploadStatus() {
+    const node = document.createElement("span");
+    node.id = UPLOAD_STATUS_ID;
+    node.className = "detniv-repost-upload-status";
+    node.setAttribute("role", "status");
+    node.setAttribute("aria-live", "polite");
+    node.setAttribute("aria-atomic", "true");
+    syncUploadStatus(node);
+    return node;
+  }
+
+  function syncRepostButton(node) {
+    const button = node || document.getElementById(REPOST_BUTTON_ID);
+    if (!button) return;
+    const active = activeSelectionEntries().length;
+    button.disabled = uploadBusy || active === 0;
+    button.textContent = uploadBusy ? "Envoi…" : "Republier";
+    button.setAttribute("aria-busy", uploadBusy ? "true" : "false");
+    button.setAttribute(
+      "aria-label",
+      uploadBusy
+        ? "Envoi des images en cours"
+        : "Republier " + articleCountText(active) + " actif" +
+          (active > 1 ? "s" : "")
+    );
+    if (uploadBusy) {
+      button.title = "Envoi des images en cours";
+    } else if (active === 0) {
+      button.title =
+        selectedItems.size > 0
+          ? "Seuls les articles actifs peuvent être republiés."
+          : "Sélectionnez au moins un article actif.";
+    } else {
+      button.title =
+        "Envoyer les images de " + articleCountText(active) + " actif" +
+        (active > 1 ? "s" : "");
+    }
+  }
+
+  function createRepostButton() {
+    const button = document.createElement("button");
+    button.id = REPOST_BUTTON_ID;
+    button.type = "button";
+    button.className = "detniv-repost-submit";
+    button.addEventListener("click", () => {
+      startImageUpload();
+    });
+    syncRepostButton(button);
+    return button;
+  }
+
+  /**
+   * Permission optionnelle d'accès aux images Vinted (`optional_host_permissions`).
+   * Firefox demande explicitement l'origine `*.vinted.net` : tant qu'elle
+   * n'est pas accordée, le téléchargement dans le background échoue par CORS.
+   * La demande doit être faite dans le handler de clic (action utilisateur).
+   */
+  async function ensureImageHostPermission() {
+    const api = browserApi();
+    if (
+      !api ||
+      !api.permissions ||
+      typeof api.permissions.request !== "function"
+    ) {
+      return true;
+    }
+    try {
+      const granted = await api.permissions.contains({
+        origins: [IMAGE_HOST_PERMISSION],
+      });
+      if (granted) return true;
+      return await api.permissions.request({
+        origins: [IMAGE_HOST_PERMISSION],
+      });
+    } catch (_) {
+      return true;
+    }
+  }
+
+  async function startImageUpload() {
+    const granted = await ensureImageHostPermission();
+    if (!granted) {
+      setUploadStatus(
+        "error",
+        "Autorisez l'accès aux images Vinted pour pouvoir les envoyer à Detniv."
+      );
+      return;
+    }
+    uploadSelectedImages();
+  }
+
+  /** Enfant direct unique portant cet id (React peut en laisser des doublons). */
+  function directChildById(parent, id) {
+    let found = null;
+    for (const child of [...parent.children]) {
+      if (child.id !== id) continue;
+      if (found) child.remove();
+      else found = child;
+    }
+    return found;
+  }
+
+  /**
+   * Garantit la présence du bouton et du statut dans la barre de filtres.
+   * Appelé aussi après un rendu React qui aurait remplacé nos nœuds.
+   */
+  function ensureRepostControls(filters) {
+    for (const old of document.querySelectorAll("#" + REPOST_BUTTON_ID)) {
+      if (old.parentElement !== filters) old.remove();
+    }
+    let button = directChildById(filters, REPOST_BUTTON_ID);
+    if (!button) {
+      button = createRepostButton();
+      filters.appendChild(button);
+    } else {
+      syncRepostButton(button);
+    }
+
+    for (const old of document.querySelectorAll("#" + UPLOAD_STATUS_ID)) {
+      if (old.parentElement !== filters) old.remove();
+    }
+    let status = directChildById(filters, UPLOAD_STATUS_ID);
+    if (!status) {
+      status = createUploadStatus();
+      filters.appendChild(status);
+    } else {
+      syncUploadStatus(status);
+    }
+  }
+
+  function detnivApiClient() {
+    const api = globalThis.DetnivApi;
+    if (!api || typeof api.handle !== "function") {
+      throw new Error(
+        "module API Detniv indisponible — rechargez la page Vinted."
+      );
+    }
+    return api;
+  }
+
+  const IMAGE_EXTENSIONS = {
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+    "image/gif": "gif",
+    "image/avif": "avif",
+    "image/heic": "heic",
+    "image/heif": "heif",
+  };
+
+  function imageFileName(item, url, blob) {
+    let base = "";
+    try {
+      const parsed = new URL(url, location.href);
+      base = decodeURIComponent(parsed.pathname.split("/").pop() || "");
+    } catch (_) {}
+    base = base.replace(/[^A-Za-z0-9._-]/g, "_").slice(-120);
+    if (!/\.(jpe?g|png|webp|gif|avif|heic|heif)$/i.test(base)) {
+      base = "image." + (IMAGE_EXTENSIONS[blob && blob.type] || "jpg");
+    }
+    const id =
+      item && item.id != null
+        ? String(item.id).replace(/[^A-Za-z0-9._-]/g, "_")
+        : "article";
+    return "vinted-" + id + "-" + base;
+  }
+
+  function isVintedImageUrl(url) {
+    let parsed;
+    try {
+      parsed = new URL(url, location.href);
+    } catch (_) {
+      return false;
+    }
+    if (parsed.protocol !== "https:") return false;
+    const host = parsed.hostname.toLowerCase();
+    return host === "vinted.net" || host.endsWith(".vinted.net");
+  }
+
+  function dataUrlToBlob(dataUrl) {
+    const comma = dataUrl.indexOf(",");
+    if (comma < 0) throw new Error("image invalide");
+    const meta = dataUrl.slice(0, comma);
+    const binary = atob(dataUrl.slice(comma + 1));
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const match = /^data:([^;,]+)/.exec(meta);
+    return new Blob([bytes], {
+      type: match ? match[1] : "application/octet-stream",
+    });
+  }
+
+  /**
+   * En MV3, le content script subit le CORS de la page : les photos
+   * images1.vinted.net n'exposent pas d'en-tête CORS. Le background, lui,
+   * utilise la permission d'hôte et renvoie l'image en data URL.
+   *
+   * Sans repli vers le fetch du content script : pour une URL Vinted, tout
+   * échec du background est signalé comme tel (extension non rechargée,
+   * permission d'hôte refusée ou inconnue), sans masquer le diagnostic par
+   * un second téléchargement voué à échouer.
+   */
+  function backgroundFailureError(response) {
+    const hint =
+      " — rechargez l'extension via about:debugging, puis rechargez l'onglet Vinted";
+    if (!response) {
+      return new Error(
+        "le module d'arrière-plan n'a pas répondu à la demande d'image" +
+          hint
+      );
+    }
+    if (response.ok === false || !response.dataUrl) {
+      return new Error(
+        (response.error || "téléchargement de l'image impossible") +
+          (response.error ? "" : hint)
+      );
+    }
+    return null;
+  }
+
+  async function fetchImageViaBackground(url) {
+    const api = browserApi();
+    if (!api || !api.runtime || typeof api.runtime.sendMessage !== "function") {
+      throw new Error(
+        "le module d'arrière-plan de l'extension n'est pas chargé — rechargez l'extension puis l'onglet Vinted"
+      );
+    }
+    let response;
+    try {
+      response = await api.runtime.sendMessage({
+        type: "detniv:fetch-image",
+        url,
+      });
+    } catch (err) {
+      const reason = (err && err.message) || err;
+      throw new Error(
+        "le module d'arrière-plan n'a pas répondu (" +
+          reason +
+          ") — rechargez l'extension puis l'onglet Vinted"
+      );
+    }
+    const failure = backgroundFailureError(response);
+    if (failure) throw failure;
+    return dataUrlToBlob(response.dataUrl);
+  }
+
+  async function fetchImageDirect(url) {
+    let response;
+    try {
+      response = await fetch(url, { credentials: "include" });
+    } catch (_) {
+      throw new Error("image inaccessible (CORS ou réseau)");
+    }
+    if (!response.ok) {
+      throw new Error("image inaccessible (HTTP " + response.status + ")");
+    }
+    let blob;
+    try {
+      blob = await response.blob();
+    } catch (_) {
+      throw new Error("lecture de l'image impossible");
+    }
+    if (!blob || !blob.size) throw new Error("image vide");
+    return blob;
+  }
+
+  async function fetchImageBlob(url) {
+    if (isVintedImageUrl(url)) {
+      // Pas de fallback direct : le content script est soumis au CORS du CDN
+      // Vinted, un échec ici serait silencieux et trompeur.
+      return fetchImageViaBackground(url);
+    }
+    return fetchImageDirect(url);
+  }
+
+  /**
+   * Test d'upload : télécharge la photo principale de chaque article actif
+   * sélectionné puis l'envoie à POST /images par lots de 20.
+   */
+  async function uploadSelectedImages() {
+    if (uploadBusy) return;
+
+    const entries = activeSelectionEntries();
+    if (entries.length === 0) {
+      setUploadStatus("error", "Sélectionnez au moins un article actif.");
+      return;
+    }
+
+    const withPhoto = entries.filter((entry) => Boolean(photoUrl(entry.item)));
+    const withoutPhoto = entries.length - withPhoto.length;
+    if (withPhoto.length === 0) {
+      setUploadStatus("error", "Aucun article sélectionné n'a de photo.");
+      return;
+    }
+
+    uploadBusy = true;
+    syncRepostButton();
+    setUploadStatus(
+      "progress",
+      "Téléchargement de " + imageCountText(withPhoto.length) + "…"
+    );
+
+    try {
+      const downloads = await Promise.allSettled(
+        withPhoto.map(async (entry) => {
+          const url = photoUrl(entry.item);
+          const blob = await fetchImageBlob(url);
+          return { blob, fileName: imageFileName(entry.item, url, blob) };
+        })
+      );
+
+      const files = [];
+      const failures = [];
+      downloads.forEach((result, index) => {
+        if (result.status === "fulfilled") {
+          files.push(result.value);
+          return;
+        }
+        const item = withPhoto[index].item;
+        const name = itemName(item) || "Article " + item.id;
+        const reason = result.reason;
+        failures.push(name + " : " + ((reason && reason.message) || reason));
+      });
+
+      if (files.length === 0) {
+        throw new Error(failures[0] || "aucune image téléchargée");
+      }
+
+      setUploadStatus(
+        "progress",
+        "Envoi de " + imageCountText(files.length) + "…"
+      );
+      let uploaded = 0;
+      for (let start = 0; start < files.length; start += MAX_UPLOAD_BATCH) {
+        const batch = files.slice(start, start + MAX_UPLOAD_BATCH);
+        const data = await detnivApiClient().handle("images.upload", {
+          files: batch,
+        });
+        uploaded += Array.isArray(data) ? data.length : batch.length;
+      }
+
+      const details = [];
+      if (withoutPhoto > 0) {
+        details.push(articleCountText(withoutPhoto) + " sans photo");
+      }
+      if (failures.length > 0) {
+        details.push(
+          imageCountText(failures.length) +
+            " ignorée" +
+            (failures.length > 1 ? "s" : "")
+        );
+      }
+      const suffix = details.length ? " (" + details.join(", ") + ")" : "";
+      setUploadStatus(
+        failures.length || withoutPhoto ? "warning" : "success",
+        imageCountText(uploaded) +
+          " envoyée" +
+          (uploaded > 1 ? "s" : "") +
+          " sur Detniv" +
+          suffix +
+          "."
+      );
+      console.info("[Detniv] upload images :", uploaded, "image(s)");
+    } catch (err) {
+      const message = (err && err.message) || String(err);
+      setUploadStatus("error", "Échec de l'envoi : " + message);
+      console.error("[Detniv] upload images :", err);
+    } finally {
+      uploadBusy = false;
+      syncRepostButton();
+    }
   }
 
   /**
@@ -441,6 +883,7 @@
         } else {
           syncSelectionCount(countNode);
         }
+        ensureRepostControls(filters);
         return existingInput;
       }
       wrapper.remove();
@@ -485,6 +928,7 @@
     host.appendChild(select);
     host.appendChild(createSelectionCount());
     filters.appendChild(host);
+    ensureRepostControls(filters);
     return input;
   }
 
@@ -632,6 +1076,56 @@
         color: #005f68;
         font-weight: 600;
       }
+      .detniv-repost-submit {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        height: 32px;
+        margin-left: 8px;
+        padding: 0 18px;
+        box-sizing: border-box;
+        border: 1px solid #ffd600;
+        border-radius: 999px;
+        background: #ffd600;
+        color: #0d0d0d;
+        font: inherit;
+        font-size: 14px;
+        font-weight: 700;
+        white-space: nowrap;
+        cursor: pointer;
+      }
+      .detniv-repost-submit:hover:not(:disabled) {
+        border-color: #ffe23d;
+        background: #ffe23d;
+      }
+      .detniv-repost-submit:focus-visible {
+        outline: 2px solid #0d0d0d;
+        outline-offset: 2px;
+      }
+      .detniv-repost-submit:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+      .detniv-repost-upload-status {
+        margin-left: 8px;
+        font-size: 13px;
+        color: #4a4a4a;
+      }
+      .detniv-repost-upload-status[hidden] {
+        display: none;
+      }
+      .detniv-repost-upload-status--progress {
+        color: #005f68;
+      }
+      .detniv-repost-upload-status--success {
+        color: #0a7a33;
+      }
+      .detniv-repost-upload-status--warning {
+        color: #8a5a00;
+      }
+      .detniv-repost-upload-status--error {
+        color: #b00020;
+      }
       @media (max-width: 720px) {
         .detniv-repost-filter-row {
           flex-wrap: wrap;
@@ -697,6 +1191,19 @@
           margin-left: 0;
           padding: 0 10px;
           font-size: 13px;
+        }
+        [data-testid="closet-seller-filters"] > .detniv-repost-submit {
+          order: 2;
+          align-self: stretch;
+          flex: 1 1 100%;
+          width: 100%;
+          margin-left: 0;
+        }
+        .detniv-repost-upload-status {
+          order: 3;
+          flex: 1 1 100%;
+          margin-left: 0;
+          font-size: 12px;
         }
       }
     `;
@@ -821,7 +1328,7 @@
 
     const key = itemKey(item);
     const name = itemName(item) || "cet article";
-    const checked = selectedKeys.has(key);
+    const checked = selectedItems.has(key);
     const label = document.createElement("label");
     label.className = SELECT_CLASS;
     label.addEventListener("click", (event) => event.stopPropagation());
@@ -838,8 +1345,15 @@
 
     checkbox.addEventListener("click", (event) => event.stopPropagation());
     checkbox.addEventListener("change", () => {
-      if (checkbox.checked) selectedKeys.add(key);
-      else selectedKeys.delete(key);
+      if (checkbox.checked) {
+        selectedItems.set(key, {
+          item,
+          condition:
+            (lastRender && lastRender.condition) || activeCondition || "active",
+        });
+      } else {
+        selectedItems.delete(key);
+      }
       card.classList.toggle(SELECTED_CLASS, checkbox.checked);
       applyLabel();
       syncSelectionCount();
@@ -1003,7 +1517,7 @@
     }
 
     const expectedSelection = orderedItems.map((item) =>
-      selectedKeys.has(itemKey(item))
+      selectedItems.has(itemKey(item))
     );
     if (
       ours.some((card, index) => {
